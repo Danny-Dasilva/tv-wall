@@ -31,7 +31,6 @@ const AdminPage = () => {
   
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedSource, setSelectedSource] = useState<"screen" | "camera">("screen");
-  const [activeTab, setActiveTab] = useState<"visual" | "manual">("visual");
   const [canvasSize, setCanvasSize] = useState({ width: 1920, height: 1080 });
   const [error, setError] = useState<string | null>(null);
   
@@ -196,33 +195,9 @@ const AdminPage = () => {
         <div className="p-4 border rounded-lg bg-white shadow-sm">
           <h2 className="text-xl font-semibold mb-4">Client Configuration</h2>
           
-          {/* Tab Navigation */}
-          <div className="flex border-b mb-4">
-            <button
-              className={`px-4 py-2 ${
-                activeTab === "visual"
-                  ? "border-b-2 border-blue-500 text-blue-500"
-                  : "text-gray-500"
-              }`}
-              onClick={() => setActiveTab("visual")}
-            >
-              Visual Editor
-            </button>
-            
-            <button
-              className={`px-4 py-2 ${
-                activeTab === "manual"
-                  ? "border-b-2 border-blue-500 text-blue-500"
-                  : "text-gray-500"
-              }`}
-              onClick={() => setActiveTab("manual")}
-            >
-              Manual Configuration
-            </button>
-          </div>
+       
           
-          {/* Tab Content */}
-          {activeTab === "visual" ? (
+
             <div>
               {/* Canvas Size Controls */}
               <div className="flex gap-4 mb-4">
@@ -272,110 +247,7 @@ const AdminPage = () => {
                 containerHeight={canvasSize.height}
               />
             </div>
-          ) : (
-            <div>
-              {/* Manual Configuration */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {clients.map((client) => (
-                  <div key={client.clientId} className="p-4 border rounded">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h3 className="font-semibold">
-                          {client.name || client.clientId}
-                        </h3>
-                        <div className="text-sm flex items-center">
-                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                            client.connected ? "bg-green-500" : "bg-red-500"
-                          }`}></span>
-                          {client.connected ? "Connected" : "Disconnected"}
-                        </div>
-                      </div>
-                      
-                      <button
-                        onClick={() => openClientWindow(client.clientId)}
-                        className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm"
-                      >
-                        Open Client
-                      </button>
-                    </div>
-                    
-                    {/* Region Configuration */}
-                    <div className="mt-3">
-                      <h4 className="text-sm font-medium mb-2">Region Settings</h4>
-                      
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">X Position</label>
-                          <input
-                            type="number"
-                            value={client.region?.x || 0}
-                            onChange={(e) => updateClientConfig(client.clientId, {
-                              region: {
-                                ...client.region || { x: 0, y: 0, width: 0, height: 0 },
-                                x: parseInt(e.target.value) || 0
-                              }
-                            })}
-                            className="w-full p-1 border rounded text-sm"
-                          />
-                        </div>
-                        
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Y Position</label>
-                          <input
-                            type="number"
-                            value={client.region?.y || 0}
-                            onChange={(e) => updateClientConfig(client.clientId, {
-                              region: {
-                                ...client.region || { x: 0, y: 0, width: 0, height: 0 },
-                                y: parseInt(e.target.value) || 0
-                              }
-                            })}
-                            className="w-full p-1 border rounded text-sm"
-                          />
-                        </div>
-                        
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Width</label>
-                          <input
-                            type="number"
-                            value={client.region?.width || 0}
-                            onChange={(e) => updateClientConfig(client.clientId, {
-                              region: {
-                                ...client.region || { x: 0, y: 0, width: 0, height: 0 },
-                                width: parseInt(e.target.value) || 0
-                              }
-                            })}
-                            className="w-full p-1 border rounded text-sm"
-                          />
-                        </div>
-                        
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Height</label>
-                          <input
-                            type="number"
-                            value={client.region?.height || 0}
-                            onChange={(e) => updateClientConfig(client.clientId, {
-                              region: {
-                                ...client.region || { x: 0, y: 0, width: 0, height: 0 },
-                                height: parseInt(e.target.value) || 0
-                              }
-                            })}
-                            className="w-full p-1 border rounded text-sm"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              
-              {clients.length === 0 && (
-                <div className="p-6 text-center text-gray-500">
-                  No clients connected yet. Clients will appear here when they connect.
-                </div>
-              )}
-            </div>
-          )}
+   
         </div>
       </div>
     </>
