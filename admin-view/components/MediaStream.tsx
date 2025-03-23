@@ -16,6 +16,7 @@ interface MediaStreamProps {
 
 const MediaStream = ({ stream, regionConfig = null }: MediaStreamProps) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   
   // Set up the stream only when it changes, not when regionConfig changes
@@ -34,6 +35,11 @@ const MediaStream = ({ stream, regionConfig = null }: MediaStreamProps) => {
         videoRef.current.addEventListener('pause', handlePause);
         videoRef.current.addEventListener('ended', handleEnded);
         
+        // Try to play immediately
+        videoRef.current.play().catch(err => {
+          console.warn('Auto-play failed:', err);
+        });
+        
         // Clean up event listeners
         return () => {
           if (videoRef.current) {
@@ -47,33 +53,50 @@ const MediaStream = ({ stream, regionConfig = null }: MediaStreamProps) => {
   }, [stream]);
   
   // Use useMemo to calculate styles efficiently and prevent unnecessary re-renders
+  const containerStyle = useMemo(() => {
+    return {
+      width: '100%',
+      height: '100%',
+      overflow: 'hidden',
+      position: 'relative' as const,
+    };
+  }, []);
+  
   const videoStyle = useMemo(() => {
     if (!regionConfig) {
       return {
         width: '100%',
         height: '100%',
-        objectFit: 'contain' as const
+        objectFit: 'contain' as const,
+        position: 'absolute' as const,
+        top: 0,
+        left: 0,
+        zIndex: 1 // Explicitly low z-index to ensure overlays appear above
       };
     }
     
     const { x, y, width, height, totalWidth, totalHeight } = regionConfig;
     const scaleX = totalWidth ? totalWidth / width : 1;
     const scaleY = totalHeight ? totalHeight / height : 1;
-    const translateX = -x * scaleX;
-    const translateY = -y * scaleY;
+    const translateX = -x * 100 / width;
+    const translateY = -y * 100 / height;
     
     return {
-      width: '100%',
-      height: '100%',
-      objectFit: 'fill' as const,
-      transform: `scale(${scaleX}, ${scaleY}) translate(${translateX}px, ${translateY}px)`,
+      width: `${scaleX * 100}%`,
+      height: `${scaleY * 100}%`,
+      objectFit: 'cover' as const,
+      position: 'absolute' as const,
+      top: 0,
+      left: 0,
+      zIndex: 1, // Explicitly low z-index
+      transform: `translate(${translateX}%, ${translateY}%)`,
       transformOrigin: 'top left',
-      transition: 'transform 0.3s ease-out' // Smooth transition for region changes
+      transition: 'transform 0.3s ease-out, width 0.3s ease-out, height 0.3s ease-out'
     };
   }, [regionConfig]);
   
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
+    <div ref={containerRef} style={containerStyle}>
       <video
         ref={videoRef}
         autoPlay
@@ -82,7 +105,21 @@ const MediaStream = ({ stream, regionConfig = null }: MediaStreamProps) => {
         style={videoStyle}
       />
       {!isPlaying && stream && (
-        <div className="stream-status">
+        <div 
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            color: 'white',
+            zIndex: 2
+          }}
+        >
           <div className="loading-indicator">Loading stream...</div>
         </div>
       )}

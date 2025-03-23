@@ -44,21 +44,28 @@ const BoxGrid: React.FC<BoxGridProps> = ({
   
   // Initialize boxes from existing client configurations
   useEffect(() => {
-    const initialBoxes = clients
-      .filter(client => client.region)
-      .map(client => ({
-        id: client.clientId,
-        x: client.region?.x || 0,
-        y: client.region?.y || 0,
-        width: client.region?.width || 100,
-        height: client.region?.height || 100,
-        clientId: client.clientId
-      }));
-    
-    if (initialBoxes.length > 0) {
-      setBoxes(initialBoxes);
+    if (clients.length > 0) {
+      const initialBoxes = clients
+        .filter(client => client.region)
+        .map(client => ({
+          id: client.clientId,
+          x: client.region?.x || 0,
+          y: client.region?.y || 0,
+          width: client.region?.width || 100,
+          height: client.region?.height || 100,
+          clientId: client.clientId
+        }));
+      
+      if (initialBoxes.length > 0 && boxes.length === 0) {
+        setBoxes(initialBoxes);
+      }
     }
-  }, []);
+  }, [clients]);
+  
+  // Update canvas size when container dimensions change
+  useEffect(() => {
+    setCanvasSize({ width: containerWidth, height: containerHeight });
+  }, [containerWidth, containerHeight]);
 
   // Create a new box
   const addBox = () => {
@@ -165,7 +172,14 @@ const BoxGrid: React.FC<BoxGridProps> = ({
       
       <div 
         className="relative bg-gray-100 border border-gray-300 rounded"
-        style={{ width: canvasSize.width, height: canvasSize.height }}
+        style={{ 
+          width: canvasSize.width, 
+          height: canvasSize.height,
+          position: 'absolute', // Changed to absolute positioning
+          top: 0,
+          left: 0,
+          zIndex: 10 // Higher than the video but lower than boxes
+        }}
       >
         {boxes.map((box) => {
           const isSelected = selectedBox === box.id;
@@ -195,11 +209,15 @@ const BoxGrid: React.FC<BoxGridProps> = ({
               onClick={() => setSelectedBox(box.id)}
               className={`
                 flex items-center justify-center
-                ${isSelected ? 'z-10' : 'z-0'}
-                ${box.clientId ? 'bg-blue-50' : 'bg-white'}
+                ${isSelected ? 'z-50' : 'z-40'}
               `}
               style={{
                 border: `2px solid ${isSelected ? 'red' : (box.clientId ? 'blue' : 'gray')}`,
+                backgroundColor: box.clientId 
+                  ? 'rgba(59, 130, 246, 0.3)' 
+                  : 'rgba(255, 255, 255, 0.5)',
+                zIndex: isSelected ? 50 : 40, // Much higher z-index to ensure visibility
+                pointerEvents: 'auto' // Ensure clicks are detected
               }}
             >
               <div className="absolute inset-0 flex flex-col items-center justify-center p-2">
@@ -207,14 +225,19 @@ const BoxGrid: React.FC<BoxGridProps> = ({
                   {client?.name || box.clientId || 'Unassigned'}
                 </div>
                 
+                <div className="text-xs text-center opacity-75 mt-1">
+                  {Math.round(box.width)} × {Math.round(box.height)}
+                </div>
+                
                 {isSelected && (
-                  <div className="absolute top-1 right-1 flex gap-1">
+                  <div className="absolute top-1 right-1 flex gap-1" style={{ zIndex: 60 }}>
                     <button 
                       onClick={(e) => {
                         e.stopPropagation();
                         deleteBox(box.id);
                       }}
-                      className="w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center"
+                      className="w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
+                      style={{ zIndex: 60 }}
                     >
                       ×
                     </button>
@@ -227,7 +250,8 @@ const BoxGrid: React.FC<BoxGridProps> = ({
       </div>
       
       {selectedBox && (
-        <div className="mt-4 p-4 border border-gray-200 rounded bg-gray-50">
+        <div className="mt-4 p-4 border border-gray-200 rounded bg-gray-50" 
+             style={{ marginTop: `${canvasSize.height + 20}px` }}>
           <h4 className="font-medium mb-2">Assign client to selected box</h4>
           <div className="grid grid-cols-2 gap-2">
             {clients.map(client => (
