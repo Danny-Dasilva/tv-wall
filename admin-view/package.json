@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "node server.js",
     "build": "next build",
-    "start": "next start",
+    "start": "NODE_ENV=production node server.js",
     "lint": "next lint"
   },
   "dependencies": {
@@ -16,7 +16,8 @@
     "react-dropzone": "^14.3.8",
     "react-player": "^2.16.0",
     "react-resizable": "^3.0.5",
-    "simple-peer": "^9.11.1"
+    "simple-peer": "^9.11.1",
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
