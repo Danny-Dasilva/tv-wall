@@ -67,26 +67,37 @@ export default function AdminPage() {
           audio: false,
         });
       } else {
+        // For camera, explicitly request high resolution
         stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+          video: {
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
           audio: false,
         });
       }
       
-      // First, try to get dimensions from video track settings
+      // Set the stream first
+      setMediaStream(stream);
+      setIsStreaming(true);
+      
+      // Get accurate dimensions directly from the video track
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         const settings = videoTrack.getSettings();
-        if (settings.width && settings.height) {
-          setCanvasSize({
-            width: settings.width,
-            height: settings.height
-          });
-        }
+        console.log('Video track settings:', settings);
+        
+        // Force a timeout to ensure settings are fully loaded
+        setTimeout(() => {
+          if (settings.width && settings.height) {
+            console.log('Updating canvas size to:', settings.width, settings.height);
+            setCanvasSize({
+              width: settings.width,
+              height: settings.height
+            });
+          }
+        }, 500);
       }
-      
-      setMediaStream(stream);
-      setIsStreaming(true);
       
       // Handle stream ending
       stream.getVideoTracks()[0].onended = () => {

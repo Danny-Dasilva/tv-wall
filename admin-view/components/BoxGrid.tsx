@@ -99,13 +99,16 @@ const BoxGrid: React.FC<BoxGridProps> = ({
 
   // Create a new box
   const addBox = () => {
+    // Initialize the box to fill the entire canvas
     const newBox: Box = {
       id: `box-${Date.now()}`,
-      x: 10,
-      y: 10,
-      width: 200,
-      height: 150
+      x: 0,
+      y: 0,
+      width: canvasSize.width,
+      height: canvasSize.height
     };
+    
+    console.log('Adding new box with dimensions:', newBox);
     setBoxes([...boxes, newBox]);
     setSelectedBox(newBox.id);
   };
@@ -208,20 +211,28 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     setIsDragging(false);
     setIsResizing(false);
     
+    // Ensure dimensions are integers to avoid precision issues
+    const x = Math.round(position.x);
+    const y = Math.round(position.y);
+    const width = position.width ? Math.round(position.width) : undefined;
+    const height = position.height ? Math.round(position.height) : undefined;
+    
+    console.log('Updating box position:', { boxId, x, y, width, height });
+    
     const updatedBoxes = boxes.map(box => {
       if (box.id === boxId) {
         const updatedBox = { 
           ...box, 
-          x: position.x, 
-          y: position.y 
+          x, 
+          y 
         };
         
-        if (position.width !== undefined) {
-          updatedBox.width = position.width;
+        if (width !== undefined) {
+          updatedBox.width = width;
         }
         
-        if (position.height !== undefined) {
-          updatedBox.height = position.height;
+        if (height !== undefined) {
+          updatedBox.height = height;
         }
         
         return updatedBox;
