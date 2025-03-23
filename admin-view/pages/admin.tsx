@@ -27,9 +27,7 @@ export default function AdminPage() {
   const socket = useSocket();
   const { streamRef, setMediaStream } = useBroadcaster(socket);
   const [clients, setClients] = useState<Client[]>([]);
-  const [selectedSource, setSelectedSource] = useState<"screen" | "camera">(
-    "screen"
-  );
+  const [selectedSource, setSelectedSource] = useState<"screen" | "camera">("screen");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"visual" | "manual">("visual");
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -97,7 +95,12 @@ export default function AdminPage() {
           {isStreaming ? (
             <div
               className="stream-preview"
-              style={{ position: "relative", zIndex: 1 }}
+              style={{ 
+                position: "relative", 
+                zIndex: 1,
+                width: `${canvasSize.width}px`,
+                height: `${canvasSize.height}px`
+              }}
             >
               <MediaStream stream={streamRef.current} />
             </div>
@@ -127,7 +130,7 @@ export default function AdminPage() {
             </div>
           )}
           {isStreaming && (
-            <button onClick={stopStreaming} className="stop-button">
+            <button onClick={stopStreaming} className="stop-button mt-2">
               Stop Streaming
             </button>
           )}
@@ -152,7 +155,7 @@ export default function AdminPage() {
           </div>
 
           {activeTab === "visual" ? (
-            <div className="visual-editor" style={{ position: "relative" }}>
+            <div className="visual-editor">
               <div className="canvas-controls mb-4">
                 <div className="flex items-center gap-4">
                   <div>
@@ -186,34 +189,48 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              {/* Position relative container to establish stacking context */}
+              {/* Relative container for both stream and boxes */}
               <div
                 style={{
                   position: "relative",
+                  width: `${canvasSize.width}px`,
                   height: `${canvasSize.height}px`,
+                  overflow: "hidden"
                 }}
               >
-                {/* Stream preview layer with low z-index */}
+                {/* Stream preview layer */}
                 <div
                   style={{
                     position: "absolute",
                     top: 0,
                     left: 0,
-                    width: `${canvasSize.width}px`,
-                    height: `${canvasSize.height}px`,
+                    width: "100%",
+                    height: "100%",
                     zIndex: 1,
                   }}
                 >
                   {isStreaming && <MediaStream stream={streamRef.current} />}
                 </div>
 
-                {/* BoxGrid component with higher z-index */}
-                <BoxGrid
-                  clients={clients}
-                  updateClientConfig={updateClientConfig}
-                  containerWidth={canvasSize.width}
-                  containerHeight={canvasSize.height}
-                />
+                {/* BoxGrid component on top with transparent background */}
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                    zIndex: 2,
+                    pointerEvents: "none", // Let pointer events pass through to boxes
+                  }}
+                >
+                  <BoxGrid
+                    clients={clients}
+                    updateClientConfig={updateClientConfig}
+                    containerWidth={canvasSize.width}
+                    containerHeight={canvasSize.height}
+                  />
+                </div>
               </div>
 
               <div className="mt-6">
@@ -255,8 +272,6 @@ export default function AdminPage() {
           position: relative;
         }
         .stream-preview {
-          width: 100%;
-          height: 400px;
           background: #000;
           border-radius: 8px;
           overflow: hidden;
@@ -266,7 +281,30 @@ export default function AdminPage() {
           margin-bottom: 30px;
           position: relative;
         }
-        /* Additional styles remain the same */
+        .tab-button {
+          padding: 8px 16px;
+          margin-right: 8px;
+          border-radius: 4px;
+          background-color: #f3f4f6;
+          border: 1px solid #e5e7eb;
+          cursor: pointer;
+        }
+        .tab-button.active {
+          background-color: #3b82f6;
+          color: white;
+          border-color: #2563eb;
+        }
+        .stop-button {
+          padding: 6px 12px;
+          background-color: #ef4444;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .stop-button:hover {
+          background-color: #dc2626;
+        }
       `}</style>
     </>
   );

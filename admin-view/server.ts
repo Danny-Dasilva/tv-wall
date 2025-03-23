@@ -170,33 +170,68 @@ app.prepare().then(() => {
     });
     
     // Admin updates client config
-    socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => {
-      if (clients[clientId]) {
-        // Store previous configuration
-        const prevConfig = { ...clients[clientId] };
-        
-        // Update with new configuration
-        clients[clientId] = {
-          ...prevConfig,
-          ...config,
-        };
-        
-        // For region updates, send only the region data to minimize payload
-        if (config.region && clients[clientId].socketId) {
-          io.to(clients[clientId].socketId).emit('region-update', {
-            clientId,
-            region: clients[clientId].region
-          });
-        } 
-        // For non-region updates, send the full config
-        else if (clients[clientId].socketId) {
-          io.to(clients[clientId].socketId).emit('client-config', clients[clientId]);
-        }
-        
-        // Update all admin views
-        io.emit('clients-update', Object.values(clients));
-      }
+    // This is the optimized handler for the server.ts file 
+// to handle client configuration updates more efficiently
+
+// Admin updates client config
+socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => {
+  if (!clients[clientId]) {
+    console.log('Client not found:', clientId);
+    return;
+  }
+  
+  // Store previous configuration
+  const prevConfig = { ...clients[clientId] };
+  
+  // Check if this is a region-only update (most common during resizing/moving)
+  const isRegionOnlyUpdate = config.region && Object.keys(config).length === 1;
+  
+  // For region updates, implement debouncing to avoid flickering
+  // Only send substantial changes to reduce network traffic
+  if (isRegionOnlyUpdate && prevConfig.region) {
+    const prevRegion = prevConfig.region;
+    const newRegion = config.region;
+    
+    // Check if change is significant enough to send
+    // Using 2 pixels tolerance to reduce unnecessary updates
+    const hasSignificantChange = newRegion ? (
+      Math.abs((newRegion.x || 0) - (prevRegion.x || 0)) > 2 ||
+      Math.abs((newRegion.y || 0) - (prevRegion.y || 0)) > 2 ||
+      Math.abs((newRegion.width || 0) - (prevRegion.width || 0)) > 2 ||
+      Math.abs((newRegion.height || 0) - (prevRegion.height || 0)) > 2 ||
+      // Always update if total dimensions change
+      (newRegion.totalWidth !== prevRegion.totalWidth) ||
+      (newRegion.totalHeight !== prevRegion.totalHeight)
+    ) : false;
+    
+    if (!hasSignificantChange) {
+      // Skip small updates but still update the admin UI
+      io.emit('clients-update', Object.values(clients));
+      return;
+    }
+  }
+  
+  // Update client configuration
+  clients[clientId] = {
+    ...prevConfig,
+    ...config,
+  };
+  
+  // For region updates, send only the region data to minimize payload
+  if (isRegionOnlyUpdate && clients[clientId].socketId) {
+    io.to(clients[clientId].socketId).emit('region-update', {
+      clientId,
+      region: clients[clientId].region
     });
+  } 
+  // For non-region updates, send the full config
+  else if (clients[clientId].socketId) {
+    io.to(clients[clientId].socketId).emit('client-config', clients[clientId]);
+  }
+  
+  // Always update all admin views
+  io.emit('clients-update', Object.values(clients));
+});
     
     // WebRTC signaling - more robust error handling
     socket.on('broadcaster-offer', ({ viewerId, offer }: BroadcasterOffer) => {

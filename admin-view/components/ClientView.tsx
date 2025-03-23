@@ -24,13 +24,19 @@ const ClientView = () => {
   const [connecting, setConnecting] = useState<boolean>(true);
   const configRequestedRef = useRef<boolean>(false);
   const router = useRouter();
-  const { clientId: queryClientId } = router.query;
+  const clientIdRef = useRef<string | null>(null);
+  const lastRegionUpdateTimeRef = useRef<number>(0);
   
   useEffect(() => {
     if (!socket || !router.isReady) return;
     
-    const clientId = (typeof queryClientId === 'string' ? queryClientId : null) || 
-                     `client-${Math.floor(Math.random() * 10000)}`;
+    // Only extract client ID from query params when router is ready
+    const queryClientId = router.query.clientId;
+    const clientId = typeof queryClientId === 'string' 
+      ? queryClientId 
+      : `client-${Math.floor(Math.random() * 10000)}`;
+    
+    clientIdRef.current = clientId;
     
     // Only request config once per socket connection
     if (!configRequestedRef.current) {
@@ -41,8 +47,10 @@ const ClientView = () => {
     
     // Handle reconnection
     socket.on('connect', () => {
-      console.log('Socket reconnected, re-requesting config');
-      socket.emit('get-client-config', { clientId });
+      if (clientIdRef.current) {
+        console.log('Socket reconnected, re-requesting config');
+        socket.emit('get-client-config', { clientId: clientIdRef.current });
+      }
     });
     
     // Handle full client configuration updates
@@ -54,7 +62,17 @@ const ClientView = () => {
     
     // Handle region-only updates to prevent stream interruption
     socket.on('region-update', ({ clientId: updatedClientId, region }) => {
+      const now = Date.now();
       console.log('Received region update:', updatedClientId, region);
+      
+      // Rate limit region updates (keep only 1 update every 100ms)
+      if (now - lastRegionUpdateTimeRef.current < 100) {
+        console.log('Skipping rapid region update');
+        return;
+      }
+      
+      lastRegionUpdateTimeRef.current = now;
+      
       setClientConfig(prevConfig => {
         if (prevConfig && prevConfig.clientId === updatedClientId) {
           return {
@@ -71,51 +89,41 @@ const ClientView = () => {
       socket.off('region-update');
       socket.off('connect');
     };
-  }, [socket, router.isReady, queryClientId, router.query]);
+  }, [socket, router.isReady, router.query]);
   
   const { streamRef, connected } = useViewer(socket, clientConfig);
   
   if (!clientConfig) {
     return (
-      <div className="loading">
-        <div>Waiting for configuration...</div>
-        <div className="text-sm mt-2 text-gray-400">
-          Client ID: {typeof queryClientId === 'string' ? queryClientId : 'loading...'}
-        </div>
+      <div className="flex items-center justify-center flex-col h-screen">
+        <div className="text-2xl mb-2">Waiting for configuration...</div>
+        {router.isReady && (
+          <div className="text-sm text-gray-400">
+            Client ID: {router.query.clientId || 'generating...'}
+          </div>
+        )}
       </div>
     );
   }
   
   return (
-    <div className="client-view" style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+    <div className="relative w-screen h-screen overflow-hidden bg-black">
       <MediaStream stream={streamRef.current} regionConfig={clientConfig.region} />
       
       {!connected && (
-        <div className="connecting" style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: '#000',
-          zIndex: 10
-        }}>
-          <div>Connecting to stream...</div>
-          <div className="text-sm mt-2 text-gray-400">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black z-10">
+          <div className="text-2xl text-white mb-2">Connecting to stream...</div>
+          <div className="text-sm text-gray-400">
             {clientConfig.name || clientConfig.clientId}
           </div>
         </div>
       )}
       
-      <div className="status-overlay">
+      <div className="absolute bottom-4 right-4 px-3 py-1.5 bg-black bg-opacity-50 rounded text-sm text-white">
         {clientConfig.name || clientConfig.clientId}
         {clientConfig.region && (
           <span className="ml-2 text-xs opacity-70">
-            [{clientConfig.region.width}×{clientConfig.region.height}]
+            [{Math.round(clientConfig.region.width)}×{Math.round(clientConfig.region.height)}]
           </span>
         )}
       </div>
