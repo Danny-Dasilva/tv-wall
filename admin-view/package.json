@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4.0.15",
     "express": "^4.21.2",
     "next": "15.2.3",
     "react": "^19.0.0",

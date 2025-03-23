@@ -295,8 +295,8 @@ const BoxGrid: React.FC<BoxGridProps> = ({
       
       {/* Client assignment panel */}
       {selectedBoxId && showClientPanel && (
-        <div className="absolute bottom-0 left-0 right-0 p-3 bg-white border-t border-gray-100 shadow-md z-[500]">
-          <h4 className="font-medium mb-2 text-sm">
+        <div className="absolute bottom-0 left-0 right-0 p-3 bg-white border-t border-gray-100 shadow-md mt-40 z-[500]">
+          <h4 className="font-medium mb-2 text-sm text-black">
             Assign Client to Selected Region
           </h4>
           
@@ -325,6 +325,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
         </div>
       )}
     </div>
+    
   );
 };
 

@@ -154,6 +154,40 @@ app.prepare().then(() => {
       io.emit('clients-update', Object.values(store.clients));
     });
     
+    // NEW: Handle broadcaster requesting client configuration
+    socket.on('get-client-config-for-broadcaster', ({ clientId }) => {
+      if (!store.clients[clientId]) {
+        console.log(`[${new Date().toISOString()}] Client not found for broadcaster request: ${clientId}`);
+        socket.emit('client-config-response', null);
+        return;
+      }
+      
+      socket.emit('client-config-response', store.clients[clientId]);
+    });
+    
+    // NEW: Get viewer socket ID for a client ID
+    socket.on('get-viewer-id-for-client', ({ clientId }) => {
+      if (!store.clients[clientId] || !store.clients[clientId].connected) {
+        socket.emit('viewer-id-response', null);
+        return;
+      }
+      
+      socket.emit('viewer-id-response', store.clients[clientId].socketId);
+    });
+    
+    // NEW: Get client ID for a viewer socket ID
+    socket.on('get-client-id-for-viewer', ({ viewerId }) => {
+      // Find client with matching socket ID
+      const client = Object.values(store.clients).find(c => c.socketId === viewerId && c.connected);
+      
+      if (!client) {
+        socket.emit('client-id-response', { clientId: null });
+        return;
+      }
+      
+      socket.emit('client-id-response', { clientId: client.clientId });
+    });
+    
     // ADMIN EVENTS
     
     // Admin requests all clients
@@ -185,6 +219,16 @@ app.prepare().then(() => {
           region: config.region,
           totalDimensions: store.streamDimensions
         });
+        
+        // NEW: Also notify broadcaster about region update for this client
+        if (store.broadcaster) {
+          io.to(store.broadcaster).emit('client-region-updated', {
+            clientId,
+            region: config.region
+          });
+          
+          console.log(`[${new Date().toISOString()}] Notified broadcaster of region update for client ${clientId}`);
+        }
       }
       
       // Update all admin views

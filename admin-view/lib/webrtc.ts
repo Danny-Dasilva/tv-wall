@@ -23,13 +23,143 @@ interface StreamDimensions {
   height: number;
 }
 
+// Create a cropped video stream based on a region
+const createCroppedStream = (
+  sourceStream: MediaStream,
+  region: RegionConfig
+): MediaStream => {
+  const video = document.createElement('video');
+  video.srcObject = sourceStream;
+  video.autoplay = true;
+  video.muted = true;
+  
+  const canvas = document.createElement('canvas');
+  canvas.width = region.width;
+  canvas.height = region.height;
+  
+  const ctx = canvas.getContext('2d');
+  
+  // Draw the cropped region to the canvas
+  const drawVideo = () => {
+    if (ctx) {
+      ctx.drawImage(
+        video,
+        region.x, region.y, region.width, region.height,
+        0, 0, canvas.width, canvas.height
+      );
+    }
+    requestAnimationFrame(drawVideo);
+  };
+  
+  video.onloadedmetadata = () => {
+    video.play();
+    drawVideo();
+  };
+  
+  // Create a stream from the canvas
+  const stream = canvas.captureStream(30); // 30 FPS
+  
+  // If the source has audio, add it to the new stream
+  const audioTrack = sourceStream.getAudioTracks()[0];
+  if (audioTrack) {
+    stream.addTrack(audioTrack);
+  }
+  
+  return stream;
+};
+
 // Hook for broadcaster functionality
 export const useBroadcaster = (socket: Socket | null) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamDimensions, setStreamDimensions] = useState<StreamDimensions | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const croppedStreams = useRef<Map<string, MediaStream>>(new Map());
   const isRegisteredRef = useRef(false);
+
+  // Get client configuration by ID
+  const getClientConfig = (clientId: string): Promise<any> => {
+    return new Promise((resolve) => {
+      if (!socket) {
+        resolve(null);
+        return;
+      }
+      
+      const handleResponse = (config: any) => {
+        socket.off('client-config-response', handleResponse);
+        resolve(config);
+      };
+      
+      socket.on('client-config-response', handleResponse);
+      socket.emit('get-client-config-for-broadcaster', { clientId });
+      
+      // Timeout in case no response
+      setTimeout(() => {
+        socket.off('client-config-response', handleResponse);
+        resolve(null);
+      }, 2000);
+    });
+  };
+
+  // Utility to get viewer ID for a client
+  const getViewerIdForClient = (clientId: string): Promise<string | null> => {
+    return new Promise((resolve) => {
+      if (!socket) {
+        resolve(null);
+        return;
+      }
+      
+      const handleResponse = (viewerId: string | null) => {
+        socket.off('viewer-id-response', handleResponse);
+        resolve(viewerId);
+      };
+      
+      socket.on('viewer-id-response', handleResponse);
+      socket.emit('get-viewer-id-for-client', { clientId });
+      
+      // Timeout
+      setTimeout(() => {
+        socket.off('viewer-id-response', handleResponse);
+        resolve(null);
+      }, 1000);
+    });
+  };
+
+  // Update client stream when region changes
+  const updateClientStream = async (clientId: string, region: RegionConfig) => {
+    if (!streamRef.current) return;
+    
+    // Find the viewer socket ID for this client
+    const viewerId = await getViewerIdForClient(clientId);
+    if (!viewerId || !peerConnections.current.has(viewerId)) return;
+    
+    // Get the existing connection
+    const peerConnection = peerConnections.current.get(viewerId)!;
+    
+    // Create a new cropped stream
+    const croppedStream = createCroppedStream(streamRef.current, region);
+    
+    // Store the cropped stream for reference
+    if (croppedStreams.current.has(viewerId)) {
+      // Stop tracks on the old cropped stream
+      const oldStream = croppedStreams.current.get(viewerId)!;
+      oldStream.getTracks().forEach(track => track.stop());
+    }
+    croppedStreams.current.set(viewerId, croppedStream);
+    
+    // Replace the existing tracks
+    const senders = peerConnection.getSenders();
+    const newTracks = croppedStream.getTracks();
+    
+    // Replace video track
+    const videoSender = senders.find(sender => sender.track?.kind === 'video');
+    const newVideoTrack = newTracks.find(track => track.kind === 'video');
+    
+    if (videoSender && newVideoTrack) {
+      await videoSender.replaceTrack(newVideoTrack);
+      console.log(`Updated stream for client ${clientId} with region:`, region);
+    }
+  };
 
   // Register as broadcaster when socket connects
   useEffect(() => {
@@ -60,17 +190,33 @@ export const useBroadcaster = (socket: Socket | null) => {
           const oldConnection = peerConnections.current.get(viewerId);
           oldConnection?.close();
           peerConnections.current.delete(viewerId);
+          
+          // Clean up any existing cropped stream
+          if (croppedStreams.current.has(viewerId)) {
+            const oldStream = croppedStreams.current.get(viewerId)!;
+            oldStream.getTracks().forEach(track => track.stop());
+            croppedStreams.current.delete(viewerId);
+          }
         }
         
         // Create new peer connection
         const peerConnection = new RTCPeerConnection(ICE_SERVERS);
         peerConnections.current.set(viewerId, peerConnection);
         
+        // Get client configuration to check for region
+        const clientConfig = await getClientConfig(clientId);
+        let streamToSend = streamRef.current;
+        
+        // If client has a region defined, create a cropped stream
+        if (clientConfig?.region) {
+          console.log(`Creating cropped stream for client ${clientId} with region:`, clientConfig.region);
+          streamToSend = createCroppedStream(streamRef.current, clientConfig.region);
+          croppedStreams.current.set(viewerId, streamToSend);
+        }
+        
         // Add stream tracks to peer connection
-        streamRef.current.getTracks().forEach(track => {
-          if (streamRef.current) {
-            peerConnection.addTrack(track, streamRef.current);
-          }
+        streamToSend.getTracks().forEach(track => {
+          peerConnection.addTrack(track, streamToSend);
         });
         
         // Handle ICE candidates
@@ -91,6 +237,13 @@ export const useBroadcaster = (socket: Socket | null) => {
             console.log(`Connection to ${viewerId} failed or closed`);
             peerConnection.close();
             peerConnections.current.delete(viewerId);
+            
+            // Clean up cropped stream
+            if (croppedStreams.current.has(viewerId)) {
+              const stream = croppedStreams.current.get(viewerId)!;
+              stream.getTracks().forEach(track => track.stop());
+              croppedStreams.current.delete(viewerId);
+            }
           }
         };
         
@@ -139,8 +292,22 @@ export const useBroadcaster = (socket: Socket | null) => {
       if (peerConnection) {
         peerConnection.close();
         peerConnections.current.delete(viewerId);
+        
+        // Clean up cropped stream
+        if (croppedStreams.current.has(viewerId)) {
+          const stream = croppedStreams.current.get(viewerId)!;
+          stream.getTracks().forEach(track => track.stop());
+          croppedStreams.current.delete(viewerId);
+        }
+        
         console.log(`Viewer disconnected and connection closed: ${viewerId}`);
       }
+    };
+    
+    // Handle client region updated
+    const handleClientRegionUpdated = async ({ clientId, region }: { clientId: string, region: RegionConfig }) => {
+      console.log(`Region updated for client ${clientId}:`, region);
+      await updateClientStream(clientId, region);
     };
     
     // Set up event listeners
@@ -148,6 +315,7 @@ export const useBroadcaster = (socket: Socket | null) => {
     socket.on('viewer-answer', handleViewerAnswer);
     socket.on('viewer-ice-candidate', handleViewerIceCandidate);
     socket.on('viewer-disconnected', handleViewerDisconnected);
+    socket.on('client-region-updated', handleClientRegionUpdated);
     
     // Re-register on reconnection
     socket.on('connect', () => {
@@ -169,13 +337,20 @@ export const useBroadcaster = (socket: Socket | null) => {
       socket.off('viewer-answer', handleViewerAnswer);
       socket.off('viewer-ice-candidate', handleViewerIceCandidate);
       socket.off('viewer-disconnected', handleViewerDisconnected);
+      socket.off('client-region-updated', handleClientRegionUpdated);
       socket.off('connect');
       
-      // Close all peer connections
+      // Close all peer connections and clean up streams
       peerConnections.current.forEach(connection => {
         connection.close();
       });
       peerConnections.current.clear();
+      
+      // Clean up all cropped streams
+      croppedStreams.current.forEach(stream => {
+        stream.getTracks().forEach(track => track.stop());
+      });
+      croppedStreams.current.clear();
     };
   }, [socket, streamDimensions]);
   
@@ -220,37 +395,93 @@ export const useBroadcaster = (socket: Socket | null) => {
       streamRef.current = stream;
       setIsStreaming(true);
       
-      // Add tracks to existing peer connections
+      // Add tracks to existing peer connections - we need to update all connections with new cropped streams
       if (peerConnections.current.size > 0 && stream.getTracks().length > 0) {
-        console.log(`Adding new tracks to ${peerConnections.current.size} existing connections`);
+        console.log(`Updating ${peerConnections.current.size} existing connections with new stream`);
         
-        peerConnections.current.forEach((pc, viewerId) => {
-          // Remove existing tracks
-          const senders = pc.getSenders();
-          senders.forEach(sender => {
-            if (sender.track) {
-              pc.removeTrack(sender);
-            }
-          });
-          
-          // Add new tracks
-          stream.getTracks().forEach(track => {
-            pc.addTrack(track, stream);
-          });
-          
-          // Renegotiate connection
-          pc.createOffer()
-            .then(offer => pc.setLocalDescription(offer))
-            .then(() => {
-              if (socket?.connected) {
-                socket.emit('broadcaster-offer', { 
-                  viewerId, 
-                  offer: pc.localDescription 
-                });
+        // We need to update each connection individually with its respective cropped stream
+        const updatePromises = Array.from(peerConnections.current.entries()).map(async ([viewerId, pc]) => {
+          try {
+            // Find the client ID for this viewer
+            const clientIdResponse = await new Promise<{clientId: string | null}>((resolve) => {
+              if (!socket) {
+                resolve({clientId: null});
+                return;
               }
-            })
-            .catch(err => console.error('Error renegotiating connection:', err));
+              
+              const handleResponse = (response: {clientId: string | null}) => {
+                socket.off('client-id-response', handleResponse);
+                resolve(response);
+              };
+              
+              socket.on('client-id-response', handleResponse);
+              socket.emit('get-client-id-for-viewer', { viewerId });
+              
+              // Timeout
+              setTimeout(() => {
+                socket.off('client-id-response', handleResponse);
+                resolve({clientId: null});
+              }, 1000);
+            });
+            
+            if (!clientIdResponse.clientId) return;
+            
+            // Get client config
+            const clientConfig = await getClientConfig(clientIdResponse.clientId);
+            
+            if (!clientConfig?.region) {
+              // If no region, use the full stream
+              const senders = pc.getSenders();
+              stream.getTracks().forEach(track => {
+                const sender = senders.find(s => s.track?.kind === track.kind);
+                if (sender) {
+                  sender.replaceTrack(track);
+                } else {
+                  pc.addTrack(track, stream);
+                }
+              });
+            } else {
+              // Create a cropped stream
+              const croppedStream = createCroppedStream(stream, clientConfig.region);
+              
+              // Clean up old cropped stream if it exists
+              if (croppedStreams.current.has(viewerId)) {
+                const oldStream = croppedStreams.current.get(viewerId)!;
+                oldStream.getTracks().forEach(track => track.stop());
+              }
+              
+              // Store the new cropped stream
+              croppedStreams.current.set(viewerId, croppedStream);
+              
+              // Replace tracks
+              const senders = pc.getSenders();
+              croppedStream.getTracks().forEach(track => {
+                const sender = senders.find(s => s.track?.kind === track.kind);
+                if (sender) {
+                  sender.replaceTrack(track);
+                } else {
+                  pc.addTrack(track, croppedStream);
+                }
+              });
+            }
+            
+            // Renegotiate connection
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            if (socket?.connected) {
+              socket.emit('broadcaster-offer', { 
+                viewerId, 
+                offer: pc.localDescription 
+              });
+            }
+          } catch (err) {
+            console.error(`Error updating connection for viewer ${viewerId}:`, err);
+          }
         });
+        
+        // Wait for all connections to update
+        await Promise.all(updatePromises);
       }
       
       // Get accurate dimensions with a delay to ensure settings are available
@@ -308,6 +539,12 @@ export const useBroadcaster = (socket: Socket | null) => {
       connection.close();
     });
     peerConnections.current.clear();
+    
+    // Clean up all cropped streams
+    croppedStreams.current.forEach(stream => {
+      stream.getTracks().forEach(track => track.stop());
+    });
+    croppedStreams.current.clear();
   };
   
   return {

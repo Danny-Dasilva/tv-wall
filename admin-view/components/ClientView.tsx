@@ -107,41 +107,6 @@ const ClientView = () => {
     }
   }, [streamRef]);
   
-  // Calculate video position and scaling for the region
-  const getVideoStyle = () => {
-    if (!region || !streamDimensions) {
-      return {
-        width: '100%', 
-        height: '100%',
-        objectFit: 'contain' as const
-      };
-    }
-    
-    // Calculate scaling factors
-    const scaleX = window.innerWidth / region.width;
-    const scaleY = window.innerHeight / region.height;
-    
-    // Use the smaller scale to ensure the region fits completely
-    const scale = Math.min(scaleX, scaleY);
-    
-    // Calculate position to center the region in view
-    const totalWidth = streamDimensions.width * scale;
-    const totalHeight = streamDimensions.height * scale;
-    
-    const left = -(region.x * scale);
-    const top = -(region.y * scale);
-    
-    return {
-      position: 'absolute' as const,
-      width: `${totalWidth}px`,
-      height: `${totalHeight}px`,
-      left: `${left}px`,
-      top: `${top}px`,
-      transform: `scale(${scale})`,
-      transformOrigin: '0 0'
-    };
-  };
-  
   // Display connection status
   if (connecting) {
     return (
@@ -156,8 +121,8 @@ const ClientView = () => {
   
   return (
     <div className="client-view h-screen w-screen overflow-hidden bg-black relative">
-      {/* Video container with overflow hidden to crop the video */}
-      <div className="absolute inset-0 overflow-hidden">
+      {/* Video container */}
+      <div className="absolute inset-0">
         {connected ? (
           <video
             ref={(el) => {
@@ -171,7 +136,11 @@ const ClientView = () => {
             autoPlay
             playsInline
             muted
-            style={getVideoStyle()}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'contain'
+            }}
           />
         ) : (
           <div className="flex items-center justify-center h-full">
