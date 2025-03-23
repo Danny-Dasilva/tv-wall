@@ -204,33 +204,33 @@ socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => 
       (newRegion.totalHeight !== prevRegion.totalHeight)
     ) : false;
     
+    // Always update admin UI
+    clients[clientId] = {
+      ...prevConfig,
+      ...config,
+    };
+    
+    // Update clients list for admin
+    io.emit('clients-update', Object.values(clients));
+    
+    // Skip small updates to clients
     if (!hasSignificantChange) {
-      // Skip small updates but still update the admin UI
-      io.emit('clients-update', Object.values(clients));
       return;
     }
+  } else {
+    // Update client configuration for non-region updates
+    clients[clientId] = {
+      ...prevConfig,
+      ...config,
+    };
   }
   
-  // Update client configuration
-  clients[clientId] = {
-    ...prevConfig,
-    ...config,
-  };
-  
-  // For region updates, send only the region data to minimize payload
-  if (isRegionOnlyUpdate && clients[clientId].socketId) {
-    io.to(clients[clientId].socketId).emit('region-update', {
-      clientId,
-      region: clients[clientId].region
-    });
-  } 
-  // For non-region updates, send the full config
-  else if (clients[clientId].socketId) {
-    io.to(clients[clientId].socketId).emit('client-config', clients[clientId]);
+  // Only send updates to clients that are connected
+  if (clients[clientId].socketId && clients[clientId].connected) {
+    // For region updates, broadcast to all clients for smoother transition
+    // This ensures other clients know about region changes that might affect their view
+    io.emit('clients-update', Object.values(clients));
   }
-  
-  // Always update all admin views
-  io.emit('clients-update', Object.values(clients));
 });
     
     // WebRTC signaling - more robust error handling

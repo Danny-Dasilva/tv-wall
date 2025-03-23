@@ -11,6 +11,14 @@ interface ConnectionData {
   connection: RTCPeerConnection;
   pendingCandidates: RTCIceCandidate[];
   state: 'new' | 'offering' | 'connected';
+  canvas?: HTMLCanvasElement;
+  canvasStream?: MediaStream;
+  region?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
 interface Connections {
@@ -19,6 +27,14 @@ interface Connections {
 
 interface ViewerConfig {
   clientId: string;
+  region?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    totalWidth: number;
+    totalHeight: number;
+  };
   [key: string]: any;
 }
 
@@ -55,12 +71,182 @@ export const useBroadcaster = (socket: Socket | null) => {
   const streamRef = useRef<MediaStream | null>(null);
   const mediaStream = useRef<MediaStream | null>(null);
   const isRegistered = useRef<boolean>(false);
-  const connectionsRef = useRef<Connections>({}); // Reference to the current connections state
+  const connectionsRef = useRef<Connections>({});
+  const [streamDimensions, setStreamDimensions] = useState<{width: number, height: number} | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const clientConfigsRef = useRef<{[clientId: string]: ViewerConfig}>({});
+  const rafRef = useRef<number | null>(null);
 
   // Update the ref whenever connections change
   useEffect(() => {
     connectionsRef.current = connections;
   }, [connections]);
+
+  // Set up a global video element for the source stream
+  useEffect(() => {
+    if (!videoRef.current) {
+      videoRef.current = document.createElement('video');
+      videoRef.current.autoplay = true;
+      videoRef.current.muted = true;
+      videoRef.current.playsInline = true;
+    }
+    
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
+  // Animation frame loop to draw cropped video to canvases
+  const updateCanvases = () => {
+    if (!videoRef.current || !mediaStream.current || videoRef.current.readyState < 2) {
+      rafRef.current = requestAnimationFrame(updateCanvases);
+      return;
+    }
+
+    const connections = connectionsRef.current;
+    Object.entries(connections).forEach(([viewerId, connectionData]) => {
+      if (connectionData.canvas && connectionData.region) {
+        const ctx = connectionData.canvas.getContext('2d');
+        if (ctx) {
+          const { x, y, width, height } = connectionData.region;
+          
+          // Only draw if we have valid dimensions
+          if (width > 0 && height > 0) {
+            // Draw the cropped region to the canvas
+            ctx.drawImage(
+              videoRef.current!,
+              x, y, width, height,
+              0, 0, connectionData.canvas.width, connectionData.canvas.height
+            );
+          }
+        }
+      }
+    });
+
+    rafRef.current = requestAnimationFrame(updateCanvases);
+  };
+
+  // Update client regions from socket updates
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleClientsUpdate = (clients: ViewerConfig[]) => {
+      // Store client configs
+      clients.forEach(client => {
+        if (client.clientId) {
+          clientConfigsRef.current[client.clientId] = client;
+          
+          // Find the connection that matches this client
+          Object.entries(connectionsRef.current).forEach(([socketId, connectionData]) => {
+            const viewerSocketId = connectionData.connection.remoteDescription?.sdp.match(/a=msid:.+ (.+)/)?.[1];
+            
+            if (client.socketId === socketId || viewerSocketId === socketId) {
+              if (client.region && connectionData.region && 
+                  (client.region.x !== connectionData.region.x ||
+                   client.region.y !== connectionData.region.y ||
+                   client.region.width !== connectionData.region.width ||
+                   client.region.height !== connectionData.region.height)) {
+                
+                // Update the connection's region
+                updateRegionForClient(socketId, client.region);
+              }
+            }
+          });
+        }
+      });
+    };
+
+    socket.on('clients-update', handleClientsUpdate);
+    
+    return () => {
+      socket.off('clients-update', handleClientsUpdate);
+    };
+  }, [socket]);
+
+  // Update a client's region and recreate its canvas stream if needed
+  const updateRegionForClient = (viewerId: string, region: { x: number, y: number, width: number, height: number, totalWidth: number, totalHeight: number }) => {
+    const connectionData = connectionsRef.current[viewerId];
+    if (!connectionData) return;
+
+    // Check if we need to update the canvas size and recreate the stream
+    const needsNewCanvas = !connectionData.canvas || 
+                           connectionData.canvas.width !== region.width || 
+                           connectionData.canvas.height !== region.height;
+
+    // Store the region in the connection data
+    setConnections(prev => ({
+      ...prev,
+      [viewerId]: {
+        ...prev[viewerId],
+        region: {
+          x: region.x,
+          y: region.y,
+          width: region.width, 
+          height: region.height
+        }
+      }
+    }));
+
+    // If we need a new canvas or the region changed significantly, update the stream
+    if (needsNewCanvas && mediaStream.current) {
+      updateClientStream(viewerId, region.width, region.height);
+    }
+  };
+
+  // Create/update a canvas and stream for a specific client
+  const updateClientStream = (viewerId: string, width: number, height: number) => {
+    const connectionData = connectionsRef.current[viewerId];
+    if (!connectionData || !mediaStream.current) return;
+
+    // Stop any existing canvas stream
+    if (connectionData.canvasStream) {
+      connectionData.canvasStream.getTracks().forEach(track => track.stop());
+    }
+
+    // Create or resize canvas
+    let canvas = connectionData.canvas;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+    } else {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    // Create a new stream from the canvas
+    const canvasStream = canvas.captureStream(30); // 30fps
+    
+    // Get the peer connection
+    const peerConnection = connectionData.connection;
+    
+    // Replace tracks in the peer connection
+    const senders = peerConnection.getSenders();
+    senders.forEach(sender => {
+      if (sender.track?.kind === 'video' && canvasStream.getVideoTracks()[0]) {
+        sender.replaceTrack(canvasStream.getVideoTracks()[0])
+          .catch(err => console.error('Error replacing track:', err));
+      }
+    });
+
+    // Update connection data with new canvas and stream
+    setConnections(prev => ({
+      ...prev,
+      [viewerId]: {
+        ...prev[viewerId],
+        canvas,
+        canvasStream
+      }
+    }));
+
+    // Start canvas drawing if not already running
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(updateCanvases);
+    }
+  };
 
   useEffect(() => {
     if (!socket) return;
@@ -81,30 +267,32 @@ export const useBroadcaster = (socket: Socket | null) => {
           sdpSemantics: 'unified-plan'
         });
         
-        // Add tracks when they exist
-        if (mediaStream.current) {
+        // Find config for this viewer
+        const clientConfig = Object.values(clientConfigsRef.current).find(
+          config => config.socketId === viewerId
+        );
+        
+        let canvas: HTMLCanvasElement | undefined;
+        let canvasStream: MediaStream | undefined;
+        
+        // Create canvas and stream if we have region info
+        if (clientConfig?.region && mediaStream.current) {
+          canvas = document.createElement('canvas');
+          canvas.width = clientConfig.region.width;
+          canvas.height = clientConfig.region.height;
+          canvasStream = canvas.captureStream(30); // 30fps
+          
+          // Add cropped video track to peer connection
+          if (canvasStream.getVideoTracks()[0]) {
+            peerConnection.addTrack(canvasStream.getVideoTracks()[0], canvasStream);
+          }
+        } 
+        // Fall back to original stream if no region
+        else if (mediaStream.current) {
+          console.log('Adding original media tracks to new connection');
           mediaStream.current.getTracks().forEach(track => {
             if (mediaStream.current) {
-              const sender = peerConnection.addTrack(track, mediaStream.current);
-              
-              // Set encoding parameters for video tracks to optimize quality
-              if (track.kind === 'video') {
-                const params = sender.getParameters();
-                if (!params.encodings) {
-                  params.encodings = [{}];
-                }
-                
-                // Configure encoding parameters for better quality
-                params.encodings[0].maxBitrate = 2500000; // 2.5 Mbps
-                params.encodings[0].maxFramerate = 30;
-                params.encodings[0].scaleResolutionDownBy = 1.0; // No downscaling
-                
-                try {
-                  sender.setParameters(params);
-                } catch (err) {
-                  console.warn('Failed to set encoding parameters:', err);
-                }
-              }
+              peerConnection.addTrack(track, mediaStream.current);
             }
           });
         }
@@ -138,20 +326,27 @@ export const useBroadcaster = (socket: Socket | null) => {
           }
         };
         
-        // Store the connection with its pending state first, before creating an offer
+        // Store connection data including canvas and region
         setConnections(prev => ({
           ...prev,
           [viewerId]: {
             connection: peerConnection,
             pendingCandidates: [],
-            state: 'new'
+            state: 'new',
+            canvas,
+            canvasStream,
+            region: clientConfig?.region ? {
+              x: clientConfig.region.x,
+              y: clientConfig.region.y,
+              width: clientConfig.region.width,
+              height: clientConfig.region.height
+            } : undefined
           },
         }));
         
         const offer = await peerConnection.createOffer({
           offerToReceiveAudio: false,
-          offerToReceiveVideo: true,
-          iceRestart: true
+          offerToReceiveVideo: false
         });
         
         await peerConnection.setLocalDescription(offer);
@@ -172,12 +367,18 @@ export const useBroadcaster = (socket: Socket | null) => {
             offer: peerConnection.localDescription,
           });
         }
+        
+        // Start canvas drawing if we have a canvas
+        if (canvas && rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(updateCanvases);
+        }
       } catch (error) {
         console.error('Error creating offer:', error);
       }
     };
     
     const handleViewerAnswer = async ({ viewerId, answer }: ViewerAnswerPayload) => {
+      console.log('Received viewer answer:', viewerId);
       try {
         const connectionData = connectionsRef.current[viewerId];
         if (!connectionData) {
@@ -204,7 +405,6 @@ export const useBroadcaster = (socket: Socket | null) => {
           const pendingCandidates = connectionData.pendingCandidates || [];
           for (const candidate of pendingCandidates) {
             try {
-              // Check again that the connection is still valid
               if (peerConnection.connectionState !== 'closed') {
                 await peerConnection.addIceCandidate(candidate);
               }
@@ -283,6 +483,11 @@ export const useBroadcaster = (socket: Socket | null) => {
       try {
         const connectionData = connectionsRef.current[viewerId];
         if (connectionData) {
+          // Stop canvas stream if it exists
+          if (connectionData.canvasStream) {
+            connectionData.canvasStream.getTracks().forEach(track => track.stop());
+          }
+          
           const peerConnection = connectionData.connection;
           if (peerConnection && peerConnection.connectionState !== 'closed') {
             peerConnection.close();
@@ -334,9 +539,14 @@ export const useBroadcaster = (socket: Socket | null) => {
       socket.off('viewer-disconnect', handleViewerDisconnect);
       socket.off('connect');
       
-      // Close all connections
+      // Close all connections and clean up
       Object.values(connectionsRef.current).forEach(connectionData => {
         try {
+          // Stop canvas streams
+          if (connectionData.canvasStream) {
+            connectionData.canvasStream.getTracks().forEach(track => track.stop());
+          }
+          
           if (connectionData.connection && connectionData.connection.connectionState !== 'closed') {
             connectionData.connection.close();
           }
@@ -344,6 +554,12 @@ export const useBroadcaster = (socket: Socket | null) => {
           console.error('Error closing connection during cleanup:', e);
         }
       });
+      
+      // Stop animation frame
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
       
       // Reset state
       setConnections({});
@@ -353,42 +569,67 @@ export const useBroadcaster = (socket: Socket | null) => {
   
   // Function to set the media stream
   const setMediaStream = (stream: MediaStream) => {
+    console.log('Setting media stream', stream);
     mediaStream.current = stream;
     streamRef.current = stream;
     
-    // Add tracks to any existing connections
+    // Connect the stream to our video element
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+    
+    // Get stream dimensions
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      const settings = videoTrack.getSettings();
+      console.log('Video track settings:', settings);
+      if (settings.width && settings.height) {
+        setStreamDimensions({
+          width: settings.width,
+          height: settings.height
+        });
+      }
+    }
+    
+    // Update all existing connections with the new stream
     Object.entries(connectionsRef.current).forEach(([viewerId, connectionData]) => {
-      try {
+      // For connections with a canvas, just let the animation loop handle it
+      if (!connectionData.canvas) {
         const peerConnection = connectionData.connection;
-        if (peerConnection && 
-            stream && 
-            peerConnection.connectionState !== 'closed') {
-          // Remove any existing tracks
-          const senders = peerConnection.getSenders();
-          senders.forEach(sender => {
+        
+        // Replace existing tracks
+        const senders = peerConnection.getSenders();
+        senders.forEach((sender) => {
+          // Remove video tracks
+          if (sender.track?.kind === 'video') {
             try {
-              peerConnection.removeTrack(sender);
+              stream.getVideoTracks().forEach(track => {
+                sender.replaceTrack(track).catch(err => {
+                  console.warn('Error replacing track:', err);
+                });
+              });
             } catch (err) {
-              console.warn('Error removing track:', err);
+              console.warn('Error replacing tracks:', err);
             }
-          });
-          
-          // Add the new tracks
-          stream.getTracks().forEach(track => {
-            try {
-              peerConnection.addTrack(track, stream);
-            } catch (err) {
-              console.warn('Error adding track:', err);
-            }
-          });
-        }
-      } catch (error) {
-        console.error('Error updating stream for connection:', error);
+          }
+        });
+      } else if (connectionData.region) {
+        // For connections with canvas, update them with new dimensions
+        updateClientStream(
+          viewerId, 
+          connectionData.region.width, 
+          connectionData.region.height
+        );
       }
     });
+    
+    // Start canvas drawing if needed
+    if (Object.values(connectionsRef.current).some(conn => conn.canvas) && rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(updateCanvases);
+    }
   };
   
-  return { streamRef, setMediaStream };
+  return { streamRef, setMediaStream, streamDimensions };
 };
 
 export const useViewer = (socket: Socket | null, config: ViewerConfig | null) => {

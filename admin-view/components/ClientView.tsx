@@ -107,8 +107,14 @@ const ClientView = () => {
   }
   
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black">
-      <MediaStream stream={streamRef.current} regionConfig={clientConfig.region} />
+    <div 
+      className="relative overflow-hidden bg-black w-screen h-screen"
+    >
+      {/* Display the full stream - we're not doing cropping on the server yet */}
+      <MediaStream 
+        stream={streamRef.current} 
+        regionConfig={clientConfig.region} 
+      />
       
       {!connected && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black z-10">

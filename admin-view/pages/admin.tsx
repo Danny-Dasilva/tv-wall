@@ -25,13 +25,15 @@ interface Client {
 
 export default function AdminPage() {
   const socket = useSocket();
-  const { streamRef, setMediaStream } = useBroadcaster(socket);
+  const { streamRef, setMediaStream, streamDimensions } = useBroadcaster(socket);
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedSource, setSelectedSource] = useState<"screen" | "camera">("screen");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"visual" | "manual">("visual");
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  // Update when clients change
   useEffect(() => {
     if (!socket) return;
     socket.on("clients-update", (updatedClients: Client[]) => {
@@ -42,6 +44,16 @@ export default function AdminPage() {
       socket.off("clients-update");
     };
   }, [socket]);
+
+  // Update canvas size when stream dimensions change
+  useEffect(() => {
+    if (streamDimensions) {
+      setCanvasSize({
+        width: streamDimensions.width,
+        height: streamDimensions.height
+      });
+    }
+  }, [streamDimensions]);
 
   const startStreaming = async () => {
     try {
@@ -60,8 +72,23 @@ export default function AdminPage() {
           audio: false,
         });
       }
+      
+      // First, try to get dimensions from video track settings
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        if (settings.width && settings.height) {
+          setCanvasSize({
+            width: settings.width,
+            height: settings.height
+          });
+        }
+      }
+      
       setMediaStream(stream);
       setIsStreaming(true);
+      
+      // Handle stream ending
       stream.getVideoTracks()[0].onended = () => {
         setIsStreaming(false);
       };
@@ -93,16 +120,23 @@ export default function AdminPage() {
         <div className="preview-container">
           <h2>Stream Preview</h2>
           {isStreaming ? (
-            <div
-              className="stream-preview"
-              style={{ 
-                position: "relative", 
-                zIndex: 1,
-                width: `${canvasSize.width}px`,
-                height: `${canvasSize.height}px`
-              }}
-            >
-              <MediaStream stream={streamRef.current} />
+            <div className="stream-container">
+              <div
+                className="stream-preview"
+                style={{ 
+                  position: "relative", 
+                  zIndex: 1,
+                  width: canvasSize.width > 1200 ? '100%' : `${canvasSize.width}px`,
+                  height: canvasSize.width > 1200 ? 'auto' : `${canvasSize.height}px`,
+                  maxWidth: '100%',
+                  aspectRatio: `${canvasSize.width} / ${canvasSize.height}`
+                }}
+              >
+                <MediaStream stream={streamRef.current} />
+              </div>
+              <button onClick={stopStreaming} className="stop-button mt-2">
+                Stop Streaming
+              </button>
             </div>
           ) : (
             <div className="start-streaming">
@@ -128,11 +162,6 @@ export default function AdminPage() {
               </div>
               <button onClick={startStreaming}>Start Streaming</button>
             </div>
-          )}
-          {isStreaming && (
-            <button onClick={stopStreaming} className="stop-button mt-2">
-              Stop Streaming
-            </button>
           )}
         </div>
 
@@ -187,15 +216,24 @@ export default function AdminPage() {
                     />
                   </div>
                 </div>
+                <div className="mt-2 text-sm text-gray-500">
+                  {streamDimensions ? 
+                    `Stream dimensions: ${streamDimensions.width}×${streamDimensions.height}` : 
+                    "Stream dimensions will appear here when streaming starts"}
+                </div>
               </div>
 
               {/* Relative container for both stream and boxes */}
               <div
+                className="visual-container"
                 style={{
                   position: "relative",
-                  width: `${canvasSize.width}px`,
-                  height: `${canvasSize.height}px`,
-                  overflow: "hidden"
+                  width: canvasSize.width > 1200 ? '100%' : `${canvasSize.width}px`,
+                  height: canvasSize.width > 1200 ? 'auto' : `${canvasSize.height}px`,
+                  maxWidth: '100%',
+                  aspectRatio: `${canvasSize.width} / ${canvasSize.height}`,
+                  overflow: "hidden",
+                  background: "#000"
                 }}
               >
                 {/* Stream preview layer */}
@@ -212,7 +250,7 @@ export default function AdminPage() {
                   {isStreaming && <MediaStream stream={streamRef.current} />}
                 </div>
 
-                {/* BoxGrid component on top with transparent background */}
+                {/* BoxGrid component on top */}
                 <div
                   style={{
                     position: "absolute",
@@ -254,7 +292,80 @@ export default function AdminPage() {
           ) : (
             // Manual configuration tab
             <div className="clients-grid">
-              {/* Existing manual config UI */}
+              {/* Client list with manual configuration options */}
+              <div className="grid gap-4">
+                {clients.map((client) => (
+                  <div key={client.clientId} className="p-4 border rounded">
+                    <div className="font-bold">{client.name || client.clientId}</div>
+                    <div className="text-sm">{client.connected ? "Connected" : "Disconnected"}</div>
+                    
+                    {client.region ? (
+                      <div className="mt-2">
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <div>
+                            <label className="block text-sm">X:</label>
+                            <input 
+                              type="number" 
+                              value={client.region.x} 
+                              onChange={(e) => updateClientConfig(client.clientId, {
+                                region: {
+                                  ...client.region!,
+                                  x: parseInt(e.target.value, 10)
+                                }
+                              })}
+                              className="w-full p-1 border rounded"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm">Y:</label>
+                            <input 
+                              type="number" 
+                              value={client.region.y} 
+                              onChange={(e) => updateClientConfig(client.clientId, {
+                                region: {
+                                  ...client.region!,
+                                  y: parseInt(e.target.value, 10)
+                                }
+                              })}
+                              className="w-full p-1 border rounded"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm">Width:</label>
+                            <input 
+                              type="number" 
+                              value={client.region.width} 
+                              onChange={(e) => updateClientConfig(client.clientId, {
+                                region: {
+                                  ...client.region!,
+                                  width: parseInt(e.target.value, 10)
+                                }
+                              })}
+                              className="w-full p-1 border rounded"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm">Height:</label>
+                            <input 
+                              type="number" 
+                              value={client.region.height} 
+                              onChange={(e) => updateClientConfig(client.clientId, {
+                                region: {
+                                  ...client.region!,
+                                  height: parseInt(e.target.value, 10)
+                                }
+                              })}
+                              className="w-full p-1 border rounded"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-sm text-gray-500">No region assigned</div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -270,16 +381,30 @@ export default function AdminPage() {
         .preview-container {
           margin-bottom: 30px;
           position: relative;
+          overflow-x: auto;
+        }
+        .stream-container {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
         }
         .stream-preview {
           background: #000;
           border-radius: 8px;
           overflow: hidden;
           position: relative;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .visual-container {
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         .visual-editor {
           margin-bottom: 30px;
           position: relative;
+          overflow-x: auto;
+          padding-bottom: 20px;
         }
         .tab-button {
           padding: 8px 16px;
@@ -296,6 +421,7 @@ export default function AdminPage() {
         }
         .stop-button {
           padding: 6px 12px;
+          margin-top: 10px;
           background-color: #ef4444;
           color: white;
           border: none;
@@ -304,6 +430,36 @@ export default function AdminPage() {
         }
         .stop-button:hover {
           background-color: #dc2626;
+        }
+        .start-streaming {
+          padding: 40px 20px;
+          border: 2px dashed #ccc;
+          border-radius: 8px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 15px;
+          width: 100%;
+          max-width: 400px;
+          margin: 0 auto;
+        }
+        .source-selector {
+          display: flex;
+          gap: 15px;
+        }
+        .source-selector label {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+        }
+        .source-selector input {
+          margin: 0;
+        }
+        
+        @media (max-width: 768px) {
+          .admin-container {
+            padding: 10px;
+          }
         }
       `}</style>
     </>
