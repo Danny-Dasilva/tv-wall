@@ -33,6 +33,7 @@ const AdminPage = () => {
   const [selectedSource, setSelectedSource] = useState<"screen" | "camera">("screen");
   const [canvasSize, setCanvasSize] = useState({ width: 1920, height: 1080 });
   const [error, setError] = useState<string | null>(null);
+  const [showControls, setShowControls] = useState(true);
   
   // Initialize canvas size from stream dimensions
   useEffect(() => {
@@ -95,6 +96,11 @@ const AdminPage = () => {
     window.open(clientUrl, "_blank");
   };
   
+  // Toggle controls visibility
+  const toggleControls = () => {
+    setShowControls(!showControls);
+  };
+  
   return (
     <>
       <Head>
@@ -110,12 +116,20 @@ const AdminPage = () => {
           
           {isStreaming ? (
             <div className="space-y-4">
-              {/* Stream Preview */}
-              <div className="relative bg-black rounded-lg overflow-hidden" 
-                style={{ 
+              {/* Video and Overlay using CSS Grid */}
+              <div 
+                style={{
+                  display: 'grid',
+                  gridTemplateAreas: "'overlay'",
                   width: '100%',
-                  aspectRatio: `${canvasSize.width}/${canvasSize.height}`
-                }}>
+                  aspectRatio: `${canvasSize.width}/${canvasSize.height}`,
+                  position: 'relative',
+                  background: 'black',
+                  borderRadius: '0.5rem',
+                  overflow: 'hidden'
+                }}
+              >
+                {/* Video Element */}
                 <video
                   autoPlay
                   playsInline
@@ -125,11 +139,40 @@ const AdminPage = () => {
                       el.srcObject = streamRef.current;
                     }
                   }}
-                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  style={{
+                    gridArea: 'overlay',
+                    width: '100%', 
+                    height: '100%', 
+                    objectFit: 'contain'
+                  }}
                 />
+                
+                {/* BoxGrid Overlay */}
+                <div style={{
+                  gridArea: 'overlay',
+                  position: 'relative',
+                  width: '100%',
+                  height: '100%',
+                }}>
+                  <BoxGrid
+                    clients={clients}
+                    updateClientConfig={updateClientConfig}
+                    containerWidth={canvasSize.width}
+                    containerHeight={canvasSize.height}
+                  />
+                </div>
+                
+                {/* Toggle controls button */}
+                <button 
+                  className="absolute top-2 right-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded hover:bg-opacity-70 transition-colors"
+                  onClick={toggleControls}
+                  style={{ zIndex: 1000 }}
+                >
+                  {showControls ? 'Hide Controls' : 'Show Controls'}
+                </button>
               </div>
               
-              {/* Stream Info */}
+              {/* Stream Info and Controls */}
               <div className="flex justify-between items-center">
                 <div>
                   <p className="text-sm text-gray-600">
@@ -191,64 +234,76 @@ const AdminPage = () => {
           )}
         </div>
         
-        {/* Client Configuration Section */}
-        <div className="p-4 border rounded-lg bg-white shadow-sm">
-          <h2 className="text-xl font-semibold mb-4">Client Configuration</h2>
-          
-       
-          
-
-            <div>
-              {/* Canvas Size Controls */}
-              <div className="flex gap-4 mb-4">
-                <div>
-                  <label className="block text-sm text-gray-600 mb-1">Width</label>
-                  <input
-                    type="number"
-                    value={canvasSize.width}
-                    onChange={(e) => setCanvasSize({ 
-                      ...canvasSize, 
-                      width: parseInt(e.target.value) || 0 
-                    })}
-                    className="w-24 p-2 border rounded"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm text-gray-600 mb-1">Height</label>
-                  <input
-                    type="number"
-                    value={canvasSize.height}
-                    onChange={(e) => setCanvasSize({ 
-                      ...canvasSize, 
-                      height: parseInt(e.target.value) || 0 
-                    })}
-                    className="w-24 p-2 border rounded"
-                  />
-                </div>
-                
-                {streamDimensions && (
-                  <div className="flex items-end mb-2">
-                    <button
-                      onClick={() => setCanvasSize(streamDimensions)}
-                      className="px-3 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
-                    >
-                      Reset to Stream Size
-                    </button>
-                  </div>
-                )}
+        {/* Client Configuration Section - only shown when controls are visible */}
+        {showControls && (
+          <div className="p-4 border rounded-lg bg-white shadow-sm">
+            <h2 className="text-xl font-semibold mb-4">Client Configuration</h2>
+            
+            {/* Canvas Size Controls */}
+            <div className="flex gap-4 mb-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Width</label>
+                <input
+                  type="number"
+                  value={canvasSize.width}
+                  onChange={(e) => setCanvasSize({ 
+                    ...canvasSize, 
+                    width: parseInt(e.target.value) || 0 
+                  })}
+                  className="w-24 p-2 border rounded"
+                />
               </div>
               
-              {/* Box Grid Editor */}
-              <BoxGrid
-                clients={clients}
-                updateClientConfig={updateClientConfig}
-                containerWidth={canvasSize.width}
-                containerHeight={canvasSize.height}
-              />
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Height</label>
+                <input
+                  type="number"
+                  value={canvasSize.height}
+                  onChange={(e) => setCanvasSize({ 
+                    ...canvasSize, 
+                    height: parseInt(e.target.value) || 0 
+                  })}
+                  className="w-24 p-2 border rounded"
+                />
+              </div>
+              
+              {streamDimensions && (
+                <div className="flex items-end mb-2">
+                  <button
+                    onClick={() => setCanvasSize(streamDimensions)}
+                    className="px-3 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
+                  >
+                    Reset to Stream Size
+                  </button>
+                </div>
+              )}
             </div>
-   
-        </div>
+
+            {/* Client list for quick access */}
+            <div className="mt-4">
+              <h3 className="text-md font-medium mb-2">Connected Clients</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                {clients.map(client => (
+                  <div 
+                    key={client.clientId}
+                    className="p-2 border rounded flex justify-between items-center"
+                  >
+                    <div className="truncate">
+                      <span className={`inline-block w-2 h-2 rounded-full mr-2 ${client.connected ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                      {client.name || client.clientId}
+                    </div>
+                    <button
+                      onClick={() => openClientWindow(client.clientId)}
+                      className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"
+                    >
+                      Open
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

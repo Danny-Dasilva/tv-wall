@@ -33,11 +33,11 @@ interface BoxGridProps {
   containerHeight: number;
 }
 
-// Generate a random pastel color
+// Generate a random pastel color with opacity
 const getRandomColor = () => {
   // Generate pastel colors for better visibility
   const hue = Math.floor(Math.random() * 360);
-  return `hsla(${hue}, 70%, 80%, 0.5)`;
+  return `hsla(${hue}, 70%, 80%, 0.4)`;
 };
 
 const BoxGrid: React.FC<BoxGridProps> = ({
@@ -49,6 +49,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [showClientPanel, setShowClientPanel] = useState(false);
   
   // Initialize or update boxes from client configurations
   useEffect(() => {
@@ -94,6 +95,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     
     setBoxes([...boxes, newBox]);
     setSelectedBoxId(newBox.id);
+    setShowClientPanel(true);
   };
   
   // Delete a box
@@ -108,6 +110,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     setBoxes(boxes.filter(box => box.id !== id));
     if (selectedBoxId === id) {
       setSelectedBoxId(null);
+      setShowClientPanel(false);
     }
   };
   
@@ -185,27 +188,31 @@ const BoxGrid: React.FC<BoxGridProps> = ({
   };
 
   return (
-    <div className="box-grid">
-      {/* Toolbar */}
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">Visual Layout Editor</h3>
+    <div className="h-full w-full relative">
+      {/* Toolbar - floating at top */}
+      <div className="absolute top-0 left-0 right-0 p-2 flex justify-between z-[500]">
         <button
           onClick={addBox}
-          className="px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm shadow-md"
         >
-          Add New Box
+          Add Region
         </button>
+        
+        {selectedBoxId && (
+          <button
+            onClick={() => {
+              setSelectedBoxId(null);
+              setShowClientPanel(false);
+            }}
+            className="px-3 py-1 bg-gray-200 text-gray-800 rounded hover:bg-gray-300 text-sm shadow-md"
+          >
+            Cancel Selection
+          </button>
+        )}
       </div>
       
-      {/* Box container - the visual editor */}
-      <div
-        className="relative border border-gray-300 bg-gray-100"
-        style={{
-          width: '100%',
-          height: containerWidth > 800 ? `${containerHeight}px` : 'auto',
-          aspectRatio: `${containerWidth}/${containerHeight}`
-        }}
-      >
+      {/* Box container - this needs to cover the entire area */}
+      <div className="absolute inset-0 w-full h-full">
         {/* Render each box */}
         {boxes.map(box => {
           const isSelected = selectedBoxId === box.id;
@@ -219,6 +226,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
               onDragStart={() => {
                 setIsDragging(true);
                 setSelectedBoxId(box.id);
+                setShowClientPanel(true);
               }}
               onDragStop={(e, d) => {
                 setIsDragging(false);
@@ -226,6 +234,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
               }}
               onResizeStart={() => {
                 setSelectedBoxId(box.id);
+                setShowClientPanel(true);
               }}
               onResizeStop={(e, direction, ref, delta, position) => {
                 updateBoxPosition(
@@ -236,25 +245,31 @@ const BoxGrid: React.FC<BoxGridProps> = ({
                   parseInt(ref.style.height)
                 );
               }}
-              onClick={() => setSelectedBoxId(box.id)}
+              onClick={() => {
+                setSelectedBoxId(box.id);
+                setShowClientPanel(true);
+              }}
               bounds="parent"
               dragGrid={[10, 10]}
               resizeGrid={[10, 10]}
-              className="flex items-center justify-center"
               style={{
-                border: isSelected ? '2px solid red' : '2px solid blue',
+                border: isSelected ? '3px solid rgba(255,0,0,0.8)' : '3px solid rgba(0,0,255,0.7)',
                 backgroundColor: box.color || 'rgba(59, 130, 246, 0.3)',
-                zIndex: isSelected ? 100 : 10
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backdropFilter: 'brightness(1.1)',
+                zIndex: 100 // Ensure it's above the video
               }}
             >
               <div className="flex flex-col items-center justify-center w-full h-full p-2">
                 {/* Box label */}
-                <div className="font-semibold text-center text-sm bg-white bg-opacity-80 px-2 py-1 rounded">
+                <div className="font-semibold text-center text-sm bg-white p-0.5 rounded shadow-md">
                   {client?.name || box.clientId || 'Unassigned'}
                 </div>
                 
                 {/* Box dimensions */}
-                <div className="text-xs mt-1 bg-black bg-opacity-50 text-white px-2 py-0.5 rounded">
+                <div className="text-xs mt-0.5 bg-black text-white p-0.25 rounded shadow-md">
                   {Math.round(box.width)} × {Math.round(box.height)}
                 </div>
                 
@@ -266,7 +281,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
                         e.stopPropagation();
                         deleteBox(box.id);
                       }}
-                      className="w-6 h-6 flex items-center justify-center bg-red-500 text-white rounded-full"
+                      className="w-6 h-6 flex items-center justify-center bg-red-500 text-white rounded-full shadow-md"
                     >
                       ×
                     </button>
@@ -278,30 +293,31 @@ const BoxGrid: React.FC<BoxGridProps> = ({
         })}
       </div>
       
-      {/* Client assignment panel (only shown when a box is selected) */}
-      {selectedBoxId && (
-        <div className="mt-4 p-4 border rounded bg-gray-50">
-          <h4 className="font-medium mb-2">Assign Client to Selected Box</h4>
+      {/* Client assignment panel */}
+      {selectedBoxId && showClientPanel && (
+        <div className="absolute bottom-0 left-0 right-0 p-3 bg-white border-t border-gray-100 shadow-md z-[500]">
+          <h4 className="font-medium mb-2 text-sm">
+            Assign Client to Selected Region
+          </h4>
           
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-auto-fit gap-2 max-h-32 overflow-y-auto">
             {clients.map(client => {
               const isAssigned = boxes.find(b => b.id === selectedBoxId)?.clientId === client.clientId;
               const isAssignedToOther = boxes.some(b => b.id !== selectedBoxId && b.clientId === client.clientId);
+              
+              const buttonStyle = isAssigned ? 'bg-green-500 text-white' : isAssignedToOther ? 'bg-yellow-200' : 'bg-gray-200 text-gray-800';
               
               return (
                 <button
                   key={client.clientId}
                   onClick={() => assignClientToBox(selectedBoxId, client.clientId)}
-                  className={`
-                    p-2 text-sm rounded flex items-center justify-between
-                    ${isAssigned ? 'bg-green-500 text-white' : isAssignedToOther ? 'bg-yellow-200' : 'bg-gray-200 hover:bg-gray-300'}
-                  `}
+                  className={`px-2 py-1 rounded ${buttonStyle} cursor-pointer`}
                   title={isAssignedToOther ? 'Currently assigned to another box' : ''}
                 >
-                  <span className="truncate">
+                  <span className="overflow-hidden text-ellipsis whitespace-nowrap">
                     {client.name || client.clientId}
                   </span>
-                  <span className={`ml-1 w-2 h-2 rounded-full ${client.connected ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                  <span className="ml-1 w-2 h-2 rounded-full" style={{ backgroundColor: client.connected ? 'rgba(34, 197, 94, 1)' : 'rgba(239, 68, 68, 1)' }}></span>
                 </button>
               );
             })}
