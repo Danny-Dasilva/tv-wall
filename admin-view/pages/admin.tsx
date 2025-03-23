@@ -35,6 +35,11 @@ const AdminPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   
+  // State for selected box and client assignment panel
+  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const [selectedBox, setSelectedBox] = useState<any | null>(null);
+  const [showClientPanel, setShowClientPanel] = useState(false);
+  
   // Initialize canvas size from stream dimensions
   useEffect(() => {
     if (streamDimensions) {
@@ -101,6 +106,35 @@ const AdminPage = () => {
     setShowControls(!showControls);
   };
   
+  // Toggle client assignment panel visibility
+  const toggleClientPanel = () => {
+    setShowClientPanel(!showClientPanel);
+  };
+  
+  // Handle box selection from BoxGrid component
+  const handleBoxSelect = (boxId: string | null, box: any | null) => {
+    setSelectedBoxId(boxId);
+    setSelectedBox(box);
+    if (boxId) {
+      setShowClientPanel(true);
+    }
+  };
+  
+  // Assign client to selected box
+  const assignClientToBox = (clientId: string) => {
+    if (!selectedBoxId || !selectedBox) return;
+    
+    // Update client configuration with the selected box's dimensions
+    updateClientConfig(clientId, {
+      region: {
+        x: Math.round(selectedBox.x),
+        y: Math.round(selectedBox.y),
+        width: Math.round(selectedBox.width),
+        height: Math.round(selectedBox.height)
+      }
+    });
+  };
+  
   return (
     <>
       <Head>
@@ -111,7 +145,7 @@ const AdminPage = () => {
         <h1 className="text-2xl font-bold mb-6">TV Wall Admin</h1>
         
         {/* Stream Section */}
-        <div className="mb-8 p-4 border rounded-lg bg-white shadow-sm">
+        <div className="mb-8 p-4 border rounded-lg bg-white text-black shadow-sm">
           <h2 className="text-xl font-semibold mb-4">Stream Control</h2>
           
           {isStreaming ? (
@@ -159,6 +193,7 @@ const AdminPage = () => {
     updateClientConfig={updateClientConfig}
     containerWidth={streamDimensions ? streamDimensions.width : canvasSize.width}
     containerHeight={streamDimensions ? streamDimensions.height : canvasSize.height}
+    onBoxSelect={handleBoxSelect}
   />
 </div>
                 
@@ -180,13 +215,65 @@ const AdminPage = () => {
                   </p>
                 </div>
                 
-                <button
-                  onClick={stopStreaming}
-                  className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-                >
-                  Stop Streaming
-                </button>
+                <div className="flex gap-2">
+                  {selectedBoxId && (
+                    <button
+                      onClick={toggleClientPanel}
+                      className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                    >
+                      {showClientPanel ? 'Hide' : 'Show'} Client Assignment
+                    </button>
+                  )}
+                  <button
+                    onClick={stopStreaming}
+                    className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+                  >
+                    Stop Streaming
+                  </button>
+                </div>
               </div>
+              
+              {/* Client assignment panel - now in parent component */}
+              {selectedBoxId && showClientPanel && (
+                <div className="mt-4 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <h4 className="font-medium text-sm text-gray-800">
+                      Assign Client to Selected Region
+                    </h4>
+                    <button 
+                      onClick={() => setShowClientPanel(false)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <span className="text-lg">×</span>
+                    </button>
+                  </div>
+                  
+                  <div className="flex overflow-x-auto pb-2 gap-2 max-w-full">
+                    {clients.map(client => {
+                      const isAssigned = selectedBox?.clientId === client.clientId;
+                      const isAssignedToOther = clients
+                        .filter(c => c.region)
+                        .some(c => c.clientId !== client.clientId && c.clientId === selectedBox?.clientId);
+                      
+                      const buttonStyle = isAssigned ? 'bg-green-500 text-white' : isAssignedToOther ? 'bg-yellow-200' : 'bg-gray-200 text-gray-800';
+                      
+                      return (
+                        <button
+                          key={client.clientId}
+                          onClick={() => assignClientToBox(client.clientId)}
+                          className={`px-2 py-1 rounded ${buttonStyle} cursor-pointer flex-shrink-0 whitespace-nowrap`}
+                          title={isAssignedToOther ? 'Currently assigned to another box' : ''}
+                        >
+                          <span className="overflow-hidden text-ellipsis inline-block">
+                            {client.name || client.clientId}
+                          </span>
+                          <span className="ml-1 w-2 h-2 rounded-full" style={{ backgroundColor: client.connected ? 'rgba(34, 197, 94, 1)' : 'rgba(239, 68, 68, 1)' }}></span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
