@@ -211,31 +211,28 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     setIsDragging(false);
     setIsResizing(false);
     
+    // Find the current box to get its existing dimensions
+    const currentBox = boxes.find(box => box.id === boxId);
+    if (!currentBox) return;
+    
     // Ensure dimensions are integers to avoid precision issues
     const x = Math.round(position.x);
     const y = Math.round(position.y);
-    const width = position.width ? Math.round(position.width) : undefined;
-    const height = position.height ? Math.round(position.height) : undefined;
+    // Use existing dimensions if not provided in the position object
+    const width = position.width !== undefined ? Math.round(position.width) : currentBox.width;
+    const height = position.height !== undefined ? Math.round(position.height) : currentBox.height;
     
     console.log('Updating box position:', { boxId, x, y, width, height });
     
     const updatedBoxes = boxes.map(box => {
       if (box.id === boxId) {
-        const updatedBox = { 
+        return { 
           ...box, 
           x, 
-          y 
+          y,
+          width,
+          height
         };
-        
-        if (width !== undefined) {
-          updatedBox.width = width;
-        }
-        
-        if (height !== undefined) {
-          updatedBox.height = height;
-        }
-        
-        return updatedBox;
       }
       return box;
     });
@@ -290,7 +287,8 @@ const BoxGrid: React.FC<BoxGridProps> = ({
             onDragStop={(e, d) => {
               updateBoxPosition(box.id, { 
                 x: d.x, 
-                y: d.y 
+                y: d.y
+                // width and height will be preserved from the existing box
               });
             }}
             onResizeStop={(e, direction, ref, delta, position) => {

@@ -105,27 +105,44 @@ export const useBroadcaster = (socket: Socket | null) => {
       rafRef.current = requestAnimationFrame(updateCanvases);
       return;
     }
-
+  
     const connections = connectionsRef.current;
-    Object.entries(connections).forEach(([viewerId, connectionData]) => {
-      if (connectionData.canvas && connectionData.region) {
-        const ctx = connectionData.canvas.getContext('2d');
-        if (ctx) {
-          const { x, y, width, height } = connectionData.region;
-          
-          // Only draw if we have valid dimensions
-          if (width > 0 && height > 0) {
-            // Draw the cropped region to the canvas
-            ctx.drawImage(
-              videoRef.current!,
-              x, y, width, height,
-              0, 0, connectionData.canvas.width, connectionData.canvas.height
-            );
+    
+    try {
+      Object.entries(connections).forEach(([viewerId, connectionData]) => {
+        // Skip invalid connections
+        if (!connectionData || 
+            !connectionData.connection || 
+            connectionData.connection.connectionState === 'closed' ||
+            connectionData.connection.signalingState === 'closed') {
+          return;
+        }
+        
+        if (connectionData.canvas && connectionData.region) {
+          const ctx = connectionData.canvas.getContext('2d');
+          if (ctx) {
+            const { x, y, width, height } = connectionData.region;
+            
+            // Only draw if we have valid dimensions
+            if (width > 0 && height > 0) {
+              try {
+                // Draw the cropped region to the canvas
+                ctx.drawImage(
+                  videoRef.current!,
+                  x, y, width, height,
+                  0, 0, connectionData.canvas.width, connectionData.canvas.height
+                );
+              } catch (e) {
+                console.warn('Error drawing to canvas:', e);
+              }
+            }
           }
         }
-      }
-    });
-
+      });
+    } catch (e) {
+      console.error('Error in updateCanvases:', e);
+    }
+  
     rafRef.current = requestAnimationFrame(updateCanvases);
   };
 
@@ -141,7 +158,23 @@ export const useBroadcaster = (socket: Socket | null) => {
           
           // Find the connection that matches this client
           Object.entries(connectionsRef.current).forEach(([socketId, connectionData]) => {
-            const viewerSocketId = connectionData.connection.remoteDescription?.sdp.match(/a=msid:.+ (.+)/)?.[1];
+            // Skip invalid/closed connections
+            if (!connectionData.connection || 
+                connectionData.connection.connectionState === 'closed' || 
+                connectionData.connection.signalingState === 'closed') {
+              return;
+            }
+            
+            // Safely extract viewer socket ID
+            let viewerSocketId;
+            try {
+              if (connectionData.connection.remoteDescription?.sdp) {
+                viewerSocketId = connectionData.connection.remoteDescription.sdp.match(/a=msid:.+ (.+)/)?.[1];
+              }
+            } catch (err) {
+              console.warn('Error accessing remoteDescription:', err);
+              return; // Skip this connection if there's an error
+            }
             
             if (client.socketId === socketId || viewerSocketId === socketId) {
               if (client.region && connectionData.region && 
