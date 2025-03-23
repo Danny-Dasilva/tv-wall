@@ -149,18 +149,18 @@ const AdminPage = () => {
                 
                 {/* BoxGrid Overlay */}
                 <div style={{
-                  gridArea: 'overlay',
-                  position: 'relative',
-                  width: '100%',
-                  height: '100%',
-                }}>
-                  <BoxGrid
-                    clients={clients}
-                    updateClientConfig={updateClientConfig}
-                    containerWidth={canvasSize.width}
-                    containerHeight={canvasSize.height}
-                  />
-                </div>
+  gridArea: 'overlay',
+  position: 'relative',
+  width: '100%',
+  height: '100%',
+}}>
+  <BoxGrid
+    clients={clients}
+    updateClientConfig={updateClientConfig}
+    containerWidth={streamDimensions ? streamDimensions.width : canvasSize.width}
+    containerHeight={streamDimensions ? streamDimensions.height : canvasSize.height}
+  />
+</div>
                 
                 {/* Toggle controls button */}
                 <button 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Rnd } from 'react-rnd';
 
 // Simple box interface
@@ -50,6 +50,43 @@ const BoxGrid: React.FC<BoxGridProps> = ({
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [showClientPanel, setShowClientPanel] = useState(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [gridDimensions, setGridDimensions] = useState({ width: 0, height: 0 });
+  
+  // Calculate scale factors between video dimensions and display dimensions
+  const scaleX = containerWidth > 0 ? gridDimensions.width / containerWidth : 1;
+  const scaleY = containerHeight > 0 ? gridDimensions.height / containerHeight : 1;
+  
+  // Update grid dimensions when container changes
+  useEffect(() => {
+    const updateGridDimensions = () => {
+      if (gridRef.current) {
+        const rect = gridRef.current.getBoundingClientRect();
+        setGridDimensions({
+          width: rect.width,
+          height: rect.height
+        });
+      }
+    };
+    
+    updateGridDimensions();
+    
+    // Update on resize
+    window.addEventListener('resize', updateGridDimensions);
+    return () => window.removeEventListener('resize', updateGridDimensions);
+  }, [containerWidth, containerHeight]);
+  
+  // Convert video coordinates to grid coordinates
+  const toGridX = (x: number) => Math.round(x * scaleX);
+  const toGridY = (y: number) => Math.round(y * scaleY);
+  const toGridWidth = (width: number) => Math.round(width * scaleX);
+  const toGridHeight = (height: number) => Math.round(height * scaleY);
+  
+  // Convert grid coordinates to video coordinates
+  const toVideoX = (x: number) => Math.round(x / scaleX);
+  const toVideoY = (y: number) => Math.round(y / scaleY);
+  const toVideoWidth = (width: number) => Math.round(width / scaleX);
+  const toVideoHeight = (height: number) => Math.round(height / scaleY);
   
   // Initialize or update boxes from client configurations
   useEffect(() => {
@@ -133,6 +170,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     setBoxes(updatedBoxes);
     
     // Update client configuration with this box's dimensions
+    // Important: Send the actual video coordinates, not grid coordinates
     updateClientConfig(clientId, {
       region: {
         x: Math.round(box.x),
@@ -146,26 +184,26 @@ const BoxGrid: React.FC<BoxGridProps> = ({
   // Update box position after drag or resize
   const updateBoxPosition = (
     id: string,
-    x: number,
-    y: number,
-    width: number,
-    height: number
+    gridX: number,
+    gridY: number,
+    gridWidth: number,
+    gridHeight: number
   ) => {
-    // Ensure values are integers
-    const roundedX = Math.round(x);
-    const roundedY = Math.round(y);
-    const roundedWidth = Math.round(width);
-    const roundedHeight = Math.round(height);
+    // Convert grid coordinates to video coordinates
+    const x = toVideoX(gridX);
+    const y = toVideoY(gridY);
+    const width = toVideoWidth(gridWidth);
+    const height = toVideoHeight(gridHeight);
     
-    // Update local state
+    // Update local state with video coordinates
     const updatedBoxes = boxes.map(box => {
       if (box.id === id) {
         return {
           ...box,
-          x: roundedX,
-          y: roundedY,
-          width: roundedWidth,
-          height: roundedHeight
+          x,
+          y,
+          width,
+          height
         };
       }
       return box;
@@ -178,17 +216,21 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     if (box?.clientId) {
       updateClientConfig(box.clientId, {
         region: {
-          x: roundedX,
-          y: roundedY,
-          width: roundedWidth,
-          height: roundedHeight
+          x,
+          y,
+          width,
+          height
         }
       });
     }
   };
 
   return (
-    <div className="h-full w-full relative">
+    <div 
+      ref={gridRef} 
+      className="h-full w-full relative"
+      style={{ aspectRatio: containerWidth && containerHeight ? `${containerWidth}/${containerHeight}` : undefined }}
+    >
       {/* Toolbar - floating at top */}
       <div className="absolute top-0 left-0 right-0 p-2 flex justify-between z-[500]">
         <button
@@ -218,11 +260,17 @@ const BoxGrid: React.FC<BoxGridProps> = ({
           const isSelected = selectedBoxId === box.id;
           const client = clients.find(c => c.clientId === box.clientId);
           
+          // Convert from video coordinates to grid coordinates for display
+          const gridX = toGridX(box.x);
+          const gridY = toGridY(box.y);
+          const gridWidth = toGridWidth(box.width);
+          const gridHeight = toGridHeight(box.height);
+          
           return (
             <Rnd
               key={box.id}
-              size={{ width: box.width, height: box.height }}
-              position={{ x: box.x, y: box.y }}
+              size={{ width: gridWidth, height: gridHeight }}
+              position={{ x: gridX, y: gridY }}
               onDragStart={() => {
                 setIsDragging(true);
                 setSelectedBoxId(box.id);
@@ -230,7 +278,7 @@ const BoxGrid: React.FC<BoxGridProps> = ({
               }}
               onDragStop={(e, d) => {
                 setIsDragging(false);
-                updateBoxPosition(box.id, d.x, d.y, box.width, box.height);
+                updateBoxPosition(box.id, d.x, d.y, gridWidth, gridHeight);
               }}
               onResizeStart={() => {
                 setSelectedBoxId(box.id);
@@ -268,9 +316,9 @@ const BoxGrid: React.FC<BoxGridProps> = ({
                   {client?.name || box.clientId || 'Unassigned'}
                 </div>
                 
-                {/* Box dimensions */}
+                {/* Box dimensions (show actual video dimensions) */}
                 <div className="text-xs mt-0.5 bg-black text-white p-0.25 rounded shadow-md">
-                  {Math.round(box.width)} × {Math.round(box.height)}
+                  {box.width} × {box.height}
                 </div>
                 
                 {/* Controls for selected box */}
@@ -295,8 +343,8 @@ const BoxGrid: React.FC<BoxGridProps> = ({
       
       {/* Client assignment panel */}
       {selectedBoxId && showClientPanel && (
-        <div className="absolute bottom-0 left-0 right-0 p-3 bg-white border-t border-gray-100 shadow-md mt-40 z-[500]">
-          <h4 className="font-medium mb-2 text-sm text-black">
+        <div className="absolute bottom-0 left-0 right-0 p-3 bg-white border-t border-gray-100 shadow-md z-[500]">
+          <h4 className="font-medium mb-2 text-sm">
             Assign Client to Selected Region
           </h4>
           
@@ -325,7 +373,6 @@ const BoxGrid: React.FC<BoxGridProps> = ({
         </div>
       )}
     </div>
-    
   );
 };
 
