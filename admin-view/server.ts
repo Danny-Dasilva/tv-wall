@@ -3,302 +3,260 @@ import http from 'http';
 import { Server, Socket } from 'socket.io';
 import next from 'next';
 
+// Simplified client configuration interface
 interface ClientConfig {
   clientId: string;
   socketId: string;
   connected: boolean;
+  name?: string;
   region?: {
     x: number;
     y: number;
     width: number;
     height: number;
-    totalWidth: number;
-    totalHeight: number;
   };
-  [key: string]: any;
 }
 
-interface ClientsMap {
-  [clientId: string]: ClientConfig;
-}
-
-interface ViewerRegistrationConfig {
-  clientId: string;
-  [key: string]: any;
-}
-
-interface ClientConfigRequest {
-  clientId: string;
-}
-
-interface ClientConfigUpdate {
-  clientId: string;
-  config: Partial<ClientConfig>;
-}
-
-interface BroadcasterOffer {
-  viewerId: string;
-  offer: RTCSessionDescriptionInit;
-}
-
-interface ViewerAnswer {
-  answer: RTCSessionDescriptionInit;
-}
-
-interface BroadcasterIceCandidate {
-  viewerId: string;
-  candidate: RTCIceCandidateInit;
-}
-
-interface ViewerIceCandidate {
-  candidate: RTCIceCandidateInit;
+// Main interface for client store
+interface ClientStore {
+  clients: Record<string, ClientConfig>;
+  broadcaster: string | null;
+  streamDimensions: {
+    width: number;
+    height: number;
+  } | null;
 }
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
+// Create a clean central store for all client data
+const store: ClientStore = {
+  clients: {},
+  broadcaster: null,
+  streamDimensions: null
+};
+
 app.prepare().then(() => {
   const server = express();
   const httpServer = http.createServer(server);
   
-  // Create Socket.io server with more robust settings
+  // Create Socket.io server with simplified settings
   const io = new Server(httpServer, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
-    },
-    pingInterval: 10000,
-    pingTimeout: 5000
+    cors: { origin: "*", methods: ["GET", "POST"] },
+    pingInterval: 25000, // Less frequent pings
+    pingTimeout: 10000   // More time for timeout
   });
   
-  // Store connected clients and their configurations
-  const clients: ClientsMap = {};
-  let broadcaster: string | null = null;
+  // Middleware to log all socket events for debugging
+  io.use((socket, next) => {
+    console.log(`[${new Date().toISOString()}] New connection attempt: ${socket.id}`);
+    next();
+  });
   
   io.on('connection', (socket: Socket) => {
-    console.log('New socket connection:', socket.id);
+    console.log(`[${new Date().toISOString()}] Socket connected: ${socket.id}`);
     
-    // Broadcaster registration
-    socket.on('register-as-broadcaster', () => {
-      // Only register if not already registered or different socket
-      if (broadcaster !== socket.id) {
-        if (broadcaster) {
-          console.log('Replacing broadcaster from', broadcaster, 'to', socket.id);
+    // BROADCASTER EVENTS
+    
+    // Handle broadcaster registration
+    socket.on('register-as-broadcaster', ({ dimensions }) => {
+      console.log(`[${new Date().toISOString()}] Broadcaster registered: ${socket.id}`);
+      
+      // Update store
+      store.broadcaster = socket.id;
+      store.streamDimensions = dimensions;
+      
+      // Notify all connected clients
+      Object.values(store.clients).forEach(client => {
+        if (client.connected) {
+          // Send directly to broadcaster to notify about this viewer
+          socket.emit('new-viewer', { viewerId: client.socketId, clientId: client.clientId });
+          
+          // Also notify client about stream dimensions
+          io.to(client.socketId).emit('stream-dimensions', dimensions);
         }
-        
-        broadcaster = socket.id;
-        console.log('Broadcaster registered:', broadcaster);
-        
-        // Notify all connected viewers about the broadcaster
-        Object.keys(clients).forEach(clientId => {
-          if (clients[clientId].socketId && clients[clientId].connected) {
-            socket.emit('new-viewer', clients[clientId].socketId);
-          }
-        });
-      } else {
-        console.log('Broadcaster already registered with ID:', broadcaster);
-      }
+      });
+      
+      // Notify all admins about stream dimensions
+      io.emit('stream-dimensions-update', store.streamDimensions);
     });
     
-    // Viewer registration
-    socket.on('register-as-viewer', (config: ViewerRegistrationConfig) => {
-      if (!config || !config.clientId) {
-        console.log('Invalid viewer registration - missing clientId');
+    // VIEWER EVENTS
+    
+    // Handle viewer registration with simplified config
+    socket.on('register-as-viewer', ({ clientId, name }) => {
+      if (!clientId) {
+        console.log(`[${new Date().toISOString()}] Invalid viewer registration - missing clientId`);
         return;
       }
       
-      const clientId = config.clientId;
-      
-      // Create or update client record
-      clients[clientId] = {
-        ...clients[clientId],
-        ...config,
+      // Create or update client
+      store.clients[clientId] = {
+        ...store.clients[clientId],
+        clientId,
+        name: name || clientId,
         socketId: socket.id,
-        connected: true,
+        connected: true
       };
       
-      console.log('Viewer registered:', clientId);
+      console.log(`[${new Date().toISOString()}] Viewer registered: ${clientId} (${socket.id})`);
       
-      // Notify the broadcaster about this viewer only if broadcaster exists
-      if (broadcaster) {
-        io.to(broadcaster).emit('new-viewer', socket.id);
-      } else {
-        console.log('No broadcaster available for viewer:', clientId);
+      // Notify broadcaster about this viewer
+      if (store.broadcaster) {
+        io.to(store.broadcaster).emit('new-viewer', { 
+          viewerId: socket.id, 
+          clientId 
+        });
+      }
+      
+      // Send initial config to this client
+      socket.emit('client-config', store.clients[clientId]);
+      
+      // If we have stream dimensions, send those too
+      if (store.streamDimensions) {
+        socket.emit('stream-dimensions', store.streamDimensions);
       }
       
       // Update all admin views
-      io.emit('clients-update', Object.values(clients));
+      io.emit('clients-update', Object.values(store.clients));
     });
     
-    // Client config requests
-    socket.on('get-client-config', ({ clientId }: ClientConfigRequest) => {
-      console.log('Config request for client:', clientId);
-      
-      // Return existing config or create a new one
-      if (!clients[clientId]) {
-        clients[clientId] = {
+    // CLIENT CONFIG EVENTS
+    
+    // Handle client requesting its configuration
+    socket.on('get-client-config', ({ clientId }) => {
+      // If client doesn't exist, create a default config
+      if (!store.clients[clientId]) {
+        store.clients[clientId] = {
           clientId,
           socketId: socket.id,
           connected: true,
-          region: {
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            totalWidth: 1920,
-            totalHeight: 1080,
-          },
+          name: clientId,
+          // Don't set a default region - let admin configure it
         };
-        console.log('Created new config for client:', clientId);
       } else {
-        clients[clientId].socketId = socket.id;
-        clients[clientId].connected = true;
-        console.log('Updated existing config for client:', clientId);
+        // Update socket ID and connection status
+        store.clients[clientId].socketId = socket.id;
+        store.clients[clientId].connected = true;
       }
       
-      // Send configuration to this client
-      socket.emit('client-config', clients[clientId]);
+      // Send the config to the client
+      socket.emit('client-config', store.clients[clientId]);
+      
+      // If we have stream dimensions, send those too
+      if (store.streamDimensions) {
+        socket.emit('stream-dimensions', store.streamDimensions);
+      }
       
       // Update all admin views
-      io.emit('clients-update', Object.values(clients));
+      io.emit('clients-update', Object.values(store.clients));
     });
     
-    // Admin requests client list
+    // ADMIN EVENTS
+    
+    // Admin requests all clients
     socket.on('get-clients', () => {
-      socket.emit('clients-update', Object.values(clients));
+      socket.emit('clients-update', Object.values(store.clients));
+      
+      // Also send stream dimensions if available
+      if (store.streamDimensions) {
+        socket.emit('stream-dimensions-update', store.streamDimensions);
+      }
     });
     
-    // Admin updates client config
-    // This is the optimized handler for the server.ts file 
-// to handle client configuration updates more efficiently
-
-// Admin updates client config
-socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => {
-  if (!clients[clientId]) {
-    console.log('Client not found:', clientId);
-    return;
-  }
-  
-  // Store previous configuration
-  const prevConfig = { ...clients[clientId] };
-  
-  // Check if this is a region-only update (most common during resizing/moving)
-  const isRegionOnlyUpdate = config.region && Object.keys(config).length === 1;
-  
-  // For region updates, implement debouncing to avoid flickering
-  // Only send substantial changes to reduce network traffic
-  if (isRegionOnlyUpdate && prevConfig.region) {
-    const prevRegion = prevConfig.region;
-    const newRegion = config.region;
-    
-    // Check if change is significant enough to send
-    // Using 2 pixels tolerance to reduce unnecessary updates
-    const hasSignificantChange = newRegion ? (
-      Math.abs((newRegion.x || 0) - (prevRegion.x || 0)) > 2 ||
-      Math.abs((newRegion.y || 0) - (prevRegion.y || 0)) > 2 ||
-      Math.abs((newRegion.width || 0) - (prevRegion.width || 0)) > 2 ||
-      Math.abs((newRegion.height || 0) - (prevRegion.height || 0)) > 2 ||
-      // Always update if total dimensions change
-      (newRegion.totalWidth !== prevRegion.totalWidth) ||
-      (newRegion.totalHeight !== prevRegion.totalHeight)
-    ) : false;
-    
-    // Always update admin UI
-    clients[clientId] = {
-      ...prevConfig,
-      ...config,
-    };
-    
-    // Update clients list for admin
-    io.emit('clients-update', Object.values(clients));
-    
-    // Skip small updates to clients
-    if (!hasSignificantChange) {
-      return;
-    }
-  } else {
-    // Update client configuration for non-region updates
-    clients[clientId] = {
-      ...prevConfig,
-      ...config,
-    };
-  }
-  
-  // Only send updates to clients that are connected
-  if (clients[clientId].socketId && clients[clientId].connected) {
-    // For region updates, broadcast to all clients for smoother transition
-    // This ensures other clients know about region changes that might affect their view
-    io.emit('clients-update', Object.values(clients));
-  }
-});
-    
-    // WebRTC signaling - more robust error handling
-    socket.on('broadcaster-offer', ({ viewerId, offer }: BroadcasterOffer) => {
-      if (!viewerId) {
-        console.log('Invalid broadcaster offer - missing viewerId');
+    // Admin updates client config - simplified approach
+    socket.on('update-client-config', ({ clientId, config }) => {
+      if (!store.clients[clientId]) {
+        console.log(`[${new Date().toISOString()}] Client not found for update: ${clientId}`);
         return;
       }
       
-      console.log(`Broadcaster sending offer to viewer: ${viewerId}`);
+      // Update client configuration
+      store.clients[clientId] = {
+        ...store.clients[clientId],
+        ...config
+      };
+      
+      // If this was a region update, send targeted update to client
+      if (config.region && store.clients[clientId].connected) {
+        io.to(store.clients[clientId].socketId).emit('region-update', {
+          region: config.region,
+          totalDimensions: store.streamDimensions
+        });
+      }
+      
+      // Update all admin views
+      io.emit('clients-update', Object.values(store.clients));
+    });
+    
+    // WEBRTC SIGNALING - Simplified
+    
+    // Forward broadcaster offer to viewer
+    socket.on('broadcaster-offer', ({ viewerId, offer }) => {
+      console.log(`[${new Date().toISOString()}] Forwarding offer to viewer: ${viewerId}`);
       io.to(viewerId).emit('broadcaster-offer', { offer });
     });
     
-    socket.on('viewer-answer', ({ answer }: ViewerAnswer) => {
-      if (!broadcaster) {
-        console.log('Received viewer answer but no broadcaster registered');
+    // Forward viewer answer to broadcaster
+    socket.on('viewer-answer', ({ answer }) => {
+      if (!store.broadcaster) {
+        console.log(`[${new Date().toISOString()}] Received viewer answer but no broadcaster`);
         return;
       }
       
-      console.log(`Viewer ${socket.id} sending answer to broadcaster`);
-      io.to(broadcaster).emit('viewer-answer', { viewerId: socket.id, answer });
+      console.log(`[${new Date().toISOString()}] Forwarding answer to broadcaster from: ${socket.id}`);
+      io.to(store.broadcaster).emit('viewer-answer', { viewerId: socket.id, answer });
     });
     
-    socket.on('broadcaster-ice-candidate', ({ viewerId, candidate }: BroadcasterIceCandidate) => {
-      if (!viewerId) {
-        console.log('Invalid broadcaster ICE candidate - missing viewerId');
-        return;
-      }
-      
-      console.log(`Broadcaster sending ICE candidate to viewer: ${viewerId}`);
+    // Forward ICE candidates in both directions
+    socket.on('broadcaster-ice-candidate', ({ viewerId, candidate }) => {
       io.to(viewerId).emit('broadcaster-ice-candidate', { candidate });
     });
     
-    socket.on('viewer-ice-candidate', ({ candidate }: ViewerIceCandidate) => {
-      if (!broadcaster) {
-        console.log('Received viewer ICE candidate but no broadcaster registered');
-        return;
-      }
+    socket.on('viewer-ice-candidate', ({ candidate }) => {
+      if (!store.broadcaster) return;
       
-      console.log(`Viewer ${socket.id} sending ICE candidate to broadcaster`);
-      io.to(broadcaster).emit('viewer-ice-candidate', { viewerId: socket.id, candidate });
+      io.to(store.broadcaster).emit('viewer-ice-candidate', { 
+        viewerId: socket.id, 
+        candidate 
+      });
     });
     
-    // Handle disconnections
+    // DISCONNECTION HANDLING
+    
     socket.on('disconnect', () => {
-      console.log('Socket disconnected:', socket.id);
+      console.log(`[${new Date().toISOString()}] Socket disconnected: ${socket.id}`);
       
       // If broadcaster disconnected
-      if (broadcaster === socket.id) {
-        console.log('Broadcaster disconnected');
-        broadcaster = null;
+      if (store.broadcaster === socket.id) {
+        console.log(`[${new Date().toISOString()}] Broadcaster disconnected`);
+        store.broadcaster = null;
+        
+        // Notify all clients
+        Object.values(store.clients).forEach(client => {
+          if (client.connected) {
+            io.to(client.socketId).emit('broadcaster-disconnected');
+          }
+        });
       }
       
       // If a client disconnected
-      Object.keys(clients).forEach(clientId => {
-        if (clients[clientId].socketId === socket.id) {
-          clients[clientId].connected = false;
-          console.log('Client disconnected:', clientId);
+      Object.entries(store.clients).forEach(([clientId, client]) => {
+        if (client.socketId === socket.id) {
+          store.clients[clientId].connected = false;
+          console.log(`[${new Date().toISOString()}] Client disconnected: ${clientId}`);
           
           // Notify broadcaster that viewer disconnected
-          if (broadcaster) {
-            io.to(broadcaster).emit('viewer-disconnect', socket.id);
+          if (store.broadcaster) {
+            io.to(store.broadcaster).emit('viewer-disconnected', socket.id);
           }
         }
       });
       
       // Update all admin views
-      io.emit('clients-update', Object.values(clients));
+      io.emit('clients-update', Object.values(store.clients));
     });
   });
   
@@ -309,8 +267,8 @@ socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => 
   
   const PORT = process.env.PORT || 3000;
   httpServer.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Admin URL: http://localhost:${PORT}/admin`);
-    console.log(`Client URL example: http://localhost:${PORT}/client?clientId=test-client-1`);
+    console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
+    console.log(`[${new Date().toISOString()}] Admin URL: http://localhost:${PORT}/admin`);
+    console.log(`[${new Date().toISOString()}] Client URL example: http://localhost:${PORT}/client?clientId=client-1`);
   });
 });

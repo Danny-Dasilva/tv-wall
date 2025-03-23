@@ -1,884 +1,530 @@
 import { useEffect, useRef, useState } from 'react';
 import { Socket } from 'socket.io-client';
 
-interface RTCIceServerConfig {
-  iceServers: Array<{
-    urls: string | string[];
-  }>;
-}
-
-interface ConnectionData {
-  connection: RTCPeerConnection;
-  pendingCandidates: RTCIceCandidate[];
-  state: 'new' | 'offering' | 'connected';
-  canvas?: HTMLCanvasElement;
-  canvasStream?: MediaStream;
-  region?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-}
-
-interface Connections {
-  [viewerId: string]: ConnectionData;
-}
-
-interface ViewerConfig {
-  clientId: string;
-  region?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    totalWidth: number;
-    totalHeight: number;
-  };
-  [key: string]: any;
-}
-
-interface ViewerAnswerPayload {
-  viewerId: string;
-  answer: RTCSessionDescription;
-}
-
-interface ViewerIceCandidatePayload {
-  viewerId: string;
-  candidate: RTCIceCandidate;
-}
-
-interface BroadcasterOfferPayload {
-  offer: RTCSessionDescription;
-}
-
-interface BroadcasterIceCandidatePayload {
-  candidate: RTCIceCandidate;
-}
-
-const ICE_SERVERS: RTCIceServerConfig = {
+// Simplified ICE server configuration
+const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' }
-  ],
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
 };
 
+// Interface for region configuration
+interface RegionConfig {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// Stream dimensions interface
+interface StreamDimensions {
+  width: number;
+  height: number;
+}
+
+// Hook for broadcaster functionality
 export const useBroadcaster = (socket: Socket | null) => {
-  const [connections, setConnections] = useState<Connections>({});
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamDimensions, setStreamDimensions] = useState<StreamDimensions | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const mediaStream = useRef<MediaStream | null>(null);
-  const isRegistered = useRef<boolean>(false);
-  const connectionsRef = useRef<Connections>({});
-  const [streamDimensions, setStreamDimensions] = useState<{width: number, height: number} | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const clientConfigsRef = useRef<{[clientId: string]: ViewerConfig}>({});
-  const rafRef = useRef<number | null>(null);
+  const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const isRegisteredRef = useRef(false);
 
-  // Update the ref whenever connections change
-  useEffect(() => {
-    connectionsRef.current = connections;
-  }, [connections]);
-
-  // Set up a global video element for the source stream
-  useEffect(() => {
-    if (!videoRef.current) {
-      videoRef.current = document.createElement('video');
-      videoRef.current.autoplay = true;
-      videoRef.current.muted = true;
-      videoRef.current.playsInline = true;
-    }
-    
-    return () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
-  }, []);
-
-  // Animation frame loop to draw cropped video to canvases
-  const updateCanvases = () => {
-    if (!videoRef.current || !mediaStream.current || videoRef.current.readyState < 2) {
-      rafRef.current = requestAnimationFrame(updateCanvases);
-      return;
-    }
-  
-    const connections = connectionsRef.current;
-    
-    try {
-      Object.entries(connections).forEach(([viewerId, connectionData]) => {
-        // Skip invalid connections
-        if (!connectionData || 
-            !connectionData.connection || 
-            connectionData.connection.connectionState === 'closed' ||
-            connectionData.connection.signalingState === 'closed') {
-          return;
-        }
-        
-        if (connectionData.canvas && connectionData.region) {
-          const ctx = connectionData.canvas.getContext('2d');
-          if (ctx) {
-            const { x, y, width, height } = connectionData.region;
-            
-            // Only draw if we have valid dimensions
-            if (width > 0 && height > 0) {
-              try {
-                // Draw the cropped region to the canvas
-                ctx.drawImage(
-                  videoRef.current!,
-                  x, y, width, height,
-                  0, 0, connectionData.canvas.width, connectionData.canvas.height
-                );
-              } catch (e) {
-                console.warn('Error drawing to canvas:', e);
-              }
-            }
-          }
-        }
-      });
-    } catch (e) {
-      console.error('Error in updateCanvases:', e);
-    }
-  
-    rafRef.current = requestAnimationFrame(updateCanvases);
-  };
-
-  // Update client regions from socket updates
+  // Register as broadcaster when socket connects
   useEffect(() => {
     if (!socket) return;
 
-    const handleClientsUpdate = (clients: ViewerConfig[]) => {
-      // Store client configs
-      clients.forEach(client => {
-        if (client.clientId) {
-          clientConfigsRef.current[client.clientId] = client;
-          
-          // Find the connection that matches this client
-          Object.entries(connectionsRef.current).forEach(([socketId, connectionData]) => {
-            // Skip invalid/closed connections
-            if (!connectionData.connection || 
-                connectionData.connection.connectionState === 'closed' || 
-                connectionData.connection.signalingState === 'closed') {
-              return;
-            }
-            
-            // Safely extract viewer socket ID
-            let viewerSocketId;
-            try {
-              if (connectionData.connection.remoteDescription?.sdp) {
-                viewerSocketId = connectionData.connection.remoteDescription.sdp.match(/a=msid:.+ (.+)/)?.[1];
-              }
-            } catch (err) {
-              console.warn('Error accessing remoteDescription:', err);
-              return; // Skip this connection if there's an error
-            }
-            
-            if (client.socketId === socketId || viewerSocketId === socketId) {
-              if (client.region && connectionData.region && 
-                  (client.region.x !== connectionData.region.x ||
-                   client.region.y !== connectionData.region.y ||
-                   client.region.width !== connectionData.region.width ||
-                   client.region.height !== connectionData.region.height)) {
-                
-                // Update the connection's region
-                updateRegionForClient(socketId, client.region);
-              }
-            }
-          });
-        }
-      });
-    };
-
-    socket.on('clients-update', handleClientsUpdate);
-    
-    return () => {
-      socket.off('clients-update', handleClientsUpdate);
-    };
-  }, [socket]);
-
-  // Update a client's region and recreate its canvas stream if needed
-  const updateRegionForClient = (viewerId: string, region: { x: number, y: number, width: number, height: number, totalWidth: number, totalHeight: number }) => {
-    const connectionData = connectionsRef.current[viewerId];
-    if (!connectionData) return;
-
-    // Check if we need to update the canvas size and recreate the stream
-    const needsNewCanvas = !connectionData.canvas || 
-                           connectionData.canvas.width !== region.width || 
-                           connectionData.canvas.height !== region.height;
-
-    // Store the region in the connection data
-    setConnections(prev => ({
-      ...prev,
-      [viewerId]: {
-        ...prev[viewerId],
-        region: {
-          x: region.x,
-          y: region.y,
-          width: region.width, 
-          height: region.height
-        }
-      }
-    }));
-
-    // If we need a new canvas or the region changed significantly, update the stream
-    if (needsNewCanvas && mediaStream.current) {
-      updateClientStream(viewerId, region.width, region.height);
-    }
-  };
-
-  // Create/update a canvas and stream for a specific client
-  const updateClientStream = (viewerId: string, width: number, height: number) => {
-    const connectionData = connectionsRef.current[viewerId];
-    if (!connectionData || !mediaStream.current) return;
-
-    // Stop any existing canvas stream
-    if (connectionData.canvasStream) {
-      connectionData.canvasStream.getTracks().forEach(track => track.stop());
-    }
-
-    // Create or resize canvas
-    let canvas = connectionData.canvas;
-    if (!canvas) {
-      canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-    } else {
-      canvas.width = width;
-      canvas.height = height;
-    }
-
-    // Create a new stream from the canvas
-    const canvasStream = canvas.captureStream(30); // 30fps
-    
-    // Get the peer connection
-    const peerConnection = connectionData.connection;
-    
-    // Replace tracks in the peer connection
-    const senders = peerConnection.getSenders();
-    senders.forEach(sender => {
-      if (sender.track?.kind === 'video' && canvasStream.getVideoTracks()[0]) {
-        sender.replaceTrack(canvasStream.getVideoTracks()[0])
-          .catch(err => console.error('Error replacing track:', err));
-      }
-    });
-
-    // Update connection data with new canvas and stream
-    setConnections(prev => ({
-      ...prev,
-      [viewerId]: {
-        ...prev[viewerId],
-        canvas,
-        canvasStream
-      }
-    }));
-
-    // Start canvas drawing if not already running
-    if (rafRef.current === null) {
-      rafRef.current = requestAnimationFrame(updateCanvases);
-    }
-  };
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleNewViewer = async (viewerId: string) => {
-      console.log('New viewer connected:', viewerId);
+    const registerAsBroadcaster = () => {
+      if (isRegisteredRef.current || !streamRef.current) return;
       
-      // Check if connection already exists
-      if (connectionsRef.current[viewerId]) {
-        console.log('Connection already exists for viewer:', viewerId);
+      console.log('Registering as broadcaster');
+      socket.emit('register-as-broadcaster', { 
+        dimensions: streamDimensions 
+      });
+      isRegisteredRef.current = true;
+    };
+
+    // Handle new viewer connection
+    const handleNewViewer = async ({ viewerId, clientId }: { viewerId: string, clientId: string }) => {
+      console.log('New viewer connected:', viewerId, clientId);
+      
+      if (!streamRef.current) {
+        console.log('No stream available for viewer');
         return;
       }
       
       try {
-        const peerConnection = new RTCPeerConnection({
-          ...ICE_SERVERS,
-          iceCandidatePoolSize: 10,
-          sdpSemantics: 'unified-plan'
-        });
-        
-        // Find config for this viewer
-        const clientConfig = Object.values(clientConfigsRef.current).find(
-          config => config.socketId === viewerId
-        );
-        
-        let canvas: HTMLCanvasElement | undefined;
-        let canvasStream: MediaStream | undefined;
-        
-        // Create canvas and stream if we have region info
-        if (clientConfig?.region && mediaStream.current) {
-          canvas = document.createElement('canvas');
-          canvas.width = clientConfig.region.width;
-          canvas.height = clientConfig.region.height;
-          canvasStream = canvas.captureStream(30); // 30fps
-          
-          // Add cropped video track to peer connection
-          if (canvasStream.getVideoTracks()[0]) {
-            peerConnection.addTrack(canvasStream.getVideoTracks()[0], canvasStream);
-          }
-        } 
-        // Fall back to original stream if no region
-        else if (mediaStream.current) {
-          console.log('Adding original media tracks to new connection');
-          mediaStream.current.getTracks().forEach(track => {
-            if (mediaStream.current) {
-              peerConnection.addTrack(track, mediaStream.current);
-            }
-          });
+        // Clean up any existing connection
+        if (peerConnections.current.has(viewerId)) {
+          const oldConnection = peerConnections.current.get(viewerId);
+          oldConnection?.close();
+          peerConnections.current.delete(viewerId);
         }
         
+        // Create new peer connection
+        const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+        peerConnections.current.set(viewerId, peerConnection);
+        
+        // Add stream tracks to peer connection
+        streamRef.current.getTracks().forEach(track => {
+          if (streamRef.current) {
+            peerConnection.addTrack(track, streamRef.current);
+          }
+        });
+        
+        // Handle ICE candidates
         peerConnection.onicecandidate = (event) => {
           if (event.candidate && socket.connected) {
             socket.emit('broadcaster-ice-candidate', {
               viewerId,
-              candidate: event.candidate,
+              candidate: event.candidate
             });
           }
         };
         
-        peerConnection.oniceconnectionstatechange = () => {
-          console.log(`ICE connection state for ${viewerId}:`, peerConnection.iceConnectionState);
+        // Log connection state changes for debugging
+        peerConnection.onconnectionstatechange = () => {
+          console.log(`Connection state for ${viewerId}: ${peerConnection.connectionState}`);
           
-          // If the connection is failed or disconnected, close it
-          if (['failed', 'closed'].includes(peerConnection.iceConnectionState)) {
-            console.log(`Connection to ${viewerId} failed, cleaning up`);
-            try {
-              peerConnection.close();
-            } catch (err) {
-              console.error('Error closing connection:', err);
-            }
-            
-            setConnections(prev => {
-              const newConnections = { ...prev };
-              delete newConnections[viewerId];
-              return newConnections;
-            });
+          if (['failed', 'closed'].includes(peerConnection.connectionState)) {
+            console.log(`Connection to ${viewerId} failed or closed`);
+            peerConnection.close();
+            peerConnections.current.delete(viewerId);
           }
         };
         
-        // Store connection data including canvas and region
-        setConnections(prev => ({
-          ...prev,
-          [viewerId]: {
-            connection: peerConnection,
-            pendingCandidates: [],
-            state: 'new',
-            canvas,
-            canvasStream,
-            region: clientConfig?.region ? {
-              x: clientConfig.region.x,
-              y: clientConfig.region.y,
-              width: clientConfig.region.width,
-              height: clientConfig.region.height
-            } : undefined
-          },
-        }));
-        
-        const offer = await peerConnection.createOffer({
-          offerToReceiveAudio: false,
-          offerToReceiveVideo: false
-        });
-        
+        // Create and send offer
+        const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         
-        // Update the connection state
-        setConnections(prev => ({
-          ...prev,
-          [viewerId]: {
-            ...prev[viewerId],
-            state: 'offering'
-          },
-        }));
-        
-        // Only send the offer if socket is still connected
-        if (socket.connected) {
-          socket.emit('broadcaster-offer', {
-            viewerId,
-            offer: peerConnection.localDescription,
-          });
-        }
-        
-        // Start canvas drawing if we have a canvas
-        if (canvas && rafRef.current === null) {
-          rafRef.current = requestAnimationFrame(updateCanvases);
-        }
+        socket.emit('broadcaster-offer', { viewerId, offer });
       } catch (error) {
-        console.error('Error creating offer:', error);
+        console.error('Error establishing connection with viewer:', error);
       }
     };
     
-    const handleViewerAnswer = async ({ viewerId, answer }: ViewerAnswerPayload) => {
-      console.log('Received viewer answer:', viewerId);
+    // Handle viewer answer
+    const handleViewerAnswer = async ({ viewerId, answer }: { viewerId: string, answer: RTCSessionDescriptionInit }) => {
       try {
-        const connectionData = connectionsRef.current[viewerId];
-        if (!connectionData) {
-          console.log('No connection found for viewer:', viewerId);
+        const peerConnection = peerConnections.current.get(viewerId);
+        if (!peerConnection) {
+          console.log('No connection found for viewer answer:', viewerId);
           return;
         }
         
-        const peerConnection = connectionData.connection;
-        
-        // Verify the connection is still valid
-        if (!peerConnection || peerConnection.connectionState === 'closed') {
-          console.log('Connection already closed for viewer:', viewerId);
-          return;
-        }
-        
-        // Only set remote description if we're in the right state
-        const currentState = peerConnection.signalingState;
-        
-        if (currentState === 'have-local-offer') {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log(`Remote description set for ${viewerId}`);
-          
-          // Process any pending ICE candidates
-          const pendingCandidates = connectionData.pendingCandidates || [];
-          for (const candidate of pendingCandidates) {
-            try {
-              if (peerConnection.connectionState !== 'closed') {
-                await peerConnection.addIceCandidate(candidate);
-              }
-            } catch (err: any) {
-              console.warn(`Error adding stored ICE candidate: ${err.message}`);
-            }
-          }
-          
-          // Update connection state
-          setConnections(prev => ({
-            ...prev,
-            [viewerId]: {
-              ...prev[viewerId],
-              state: 'connected',
-              pendingCandidates: []
-            },
-          }));
-        } else {
-          console.warn(`Cannot set remote answer in state ${currentState} for ${viewerId}`);
-        }
+        // Set remote description
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log(`Remote description set for ${viewerId}`);
       } catch (error) {
         console.error('Error handling viewer answer:', error);
       }
     };
     
-    const handleViewerIceCandidate = async ({ viewerId, candidate }: ViewerIceCandidatePayload) => {
+    // Handle viewer ICE candidate
+    const handleViewerIceCandidate = async ({ viewerId, candidate }: { viewerId: string, candidate: RTCIceCandidateInit }) => {
       try {
-        const connectionData = connectionsRef.current[viewerId];
-        if (!connectionData) {
-          console.log('No connection found for viewer when handling ICE:', viewerId);
-          return;
-        }
+        const peerConnection = peerConnections.current.get(viewerId);
+        if (!peerConnection) return;
         
-        const peerConnection = connectionData.connection;
-        
-        // Skip if the connection is closed or null
-        if (!peerConnection || peerConnection.connectionState === 'closed') {
-          console.log('Connection closed or null when handling ICE for viewer:', viewerId);
-          return;
-        }
-        
-        const iceCandidate = new RTCIceCandidate(candidate);
-        
-        // If we have a remote description and connection is still open, add the candidate immediately
-        if (peerConnection.remoteDescription && 
-            peerConnection.remoteDescription.type && 
-            peerConnection.connectionState !== 'closed') {
-          try {
-            await peerConnection.addIceCandidate(iceCandidate);
-          } catch (err: any) {
-            console.warn(`Error adding ICE candidate: ${err.message}`);
-          }
-        } else {
-          // Otherwise, store it for later
-          console.log('Storing ICE candidate for later for viewer:', viewerId);
-          setConnections(prev => {
-            // Check if the connection still exists in our state
-            if (!prev[viewerId]) return prev;
-            
-            return {
-              ...prev,
-              [viewerId]: {
-                ...prev[viewerId],
-                pendingCandidates: [...(prev[viewerId].pendingCandidates || []), iceCandidate]
-              },
-            };
-          });
-        }
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (error) {
-        console.error('Error handling viewer ICE candidate:', error);
+        console.error('Error handling ICE candidate:', error);
       }
     };
     
-    const handleViewerDisconnect = (viewerId: string) => {
-      console.log('Viewer disconnected:', viewerId);
-      try {
-        const connectionData = connectionsRef.current[viewerId];
-        if (connectionData) {
-          // Stop canvas stream if it exists
-          if (connectionData.canvasStream) {
-            connectionData.canvasStream.getTracks().forEach(track => track.stop());
-          }
-          
-          const peerConnection = connectionData.connection;
-          if (peerConnection && peerConnection.connectionState !== 'closed') {
-            peerConnection.close();
-          }
-          
-          setConnections(prev => {
-            const newConnections = { ...prev };
-            delete newConnections[viewerId];
-            return newConnections;
-          });
-        }
-      } catch (error) {
-        console.error('Error handling viewer disconnect:', error);
+    // Handle viewer disconnection
+    const handleViewerDisconnected = (viewerId: string) => {
+      const peerConnection = peerConnections.current.get(viewerId);
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnections.current.delete(viewerId);
+        console.log(`Viewer disconnected and connection closed: ${viewerId}`);
       }
     };
     
-    const registerAsBroadcaster = () => {
-      if (isRegistered.current) {
-        console.log('Already registered as broadcaster, skipping');
-        return;
-      }
-      
-      console.log('Registering as broadcaster');
-      socket.emit('register-as-broadcaster');
-      isRegistered.current = true;
-    };
-    
-    // Set up socket event listeners
+    // Set up event listeners
     socket.on('new-viewer', handleNewViewer);
     socket.on('viewer-answer', handleViewerAnswer);
     socket.on('viewer-ice-candidate', handleViewerIceCandidate);
-    socket.on('viewer-disconnect', handleViewerDisconnect);
+    socket.on('viewer-disconnected', handleViewerDisconnected);
     
-    // Register as a broadcaster only once
-    registerAsBroadcaster();
-    
-    // Handle reconnection
+    // Re-register on reconnection
     socket.on('connect', () => {
-      console.log('Socket reconnected, registering as broadcaster again');
-      isRegistered.current = false; // Reset flag to allow re-registration
-      registerAsBroadcaster();
+      console.log('Socket reconnected, re-registering as broadcaster');
+      isRegisteredRef.current = false;
+      if (streamRef.current) {
+        registerAsBroadcaster();
+      }
     });
+    
+    // If we already have a stream, register as broadcaster
+    if (streamRef.current) {
+      registerAsBroadcaster();
+    }
     
     return () => {
       // Clean up event listeners
       socket.off('new-viewer', handleNewViewer);
       socket.off('viewer-answer', handleViewerAnswer);
       socket.off('viewer-ice-candidate', handleViewerIceCandidate);
-      socket.off('viewer-disconnect', handleViewerDisconnect);
+      socket.off('viewer-disconnected', handleViewerDisconnected);
       socket.off('connect');
       
-      // Close all connections and clean up
-      Object.values(connectionsRef.current).forEach(connectionData => {
-        try {
-          // Stop canvas streams
-          if (connectionData.canvasStream) {
-            connectionData.canvasStream.getTracks().forEach(track => track.stop());
-          }
-          
-          if (connectionData.connection && connectionData.connection.connectionState !== 'closed') {
-            connectionData.connection.close();
-          }
-        } catch (e) {
-          console.error('Error closing connection during cleanup:', e);
-        }
+      // Close all peer connections
+      peerConnections.current.forEach(connection => {
+        connection.close();
+      });
+      peerConnections.current.clear();
+    };
+  }, [socket, streamDimensions]);
+  
+  // Start streaming function
+  const startStreaming = async (sourceType: 'screen' | 'camera') => {
+    try {
+      console.log(`Starting ${sourceType} capture...`);
+      
+      // Stop any existing stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      // Get new stream with explicit constraints
+      let stream: MediaStream;
+      if (sourceType === 'screen') {
+        // For screen capture
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor'
+          } as MediaTrackConstraints,
+          audio: false
+        });
+        console.log("Screen capture stream obtained:", stream);
+      } else {
+        // For camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,  // Simplified to ensure camera works
+          audio: false
+        });
+        console.log("Camera stream obtained:", stream);
+      }
+      
+      // Log available tracks for debugging
+      stream.getTracks().forEach(track => {
+        console.log(`Track of kind ${track.kind} added:`, track.getSettings());
       });
       
-      // Stop animation frame
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
+      // Save the stream
+      streamRef.current = stream;
+      setIsStreaming(true);
+      
+      // Add tracks to existing peer connections
+      if (peerConnections.current.size > 0 && stream.getTracks().length > 0) {
+        console.log(`Adding new tracks to ${peerConnections.current.size} existing connections`);
+        
+        peerConnections.current.forEach((pc, viewerId) => {
+          // Remove existing tracks
+          const senders = pc.getSenders();
+          senders.forEach(sender => {
+            if (sender.track) {
+              pc.removeTrack(sender);
+            }
+          });
+          
+          // Add new tracks
+          stream.getTracks().forEach(track => {
+            pc.addTrack(track, stream);
+          });
+          
+          // Renegotiate connection
+          pc.createOffer()
+            .then(offer => pc.setLocalDescription(offer))
+            .then(() => {
+              if (socket?.connected) {
+                socket.emit('broadcaster-offer', { 
+                  viewerId, 
+                  offer: pc.localDescription 
+                });
+              }
+            })
+            .catch(err => console.error('Error renegotiating connection:', err));
+        });
       }
       
-      // Reset state
-      setConnections({});
-      isRegistered.current = false;
-    };
-  }, [socket]);
-  
-  // Function to set the media stream
-  const setMediaStream = (stream: MediaStream) => {
-    console.log('Setting media stream', stream);
-    mediaStream.current = stream;
-    streamRef.current = stream;
-    
-    // Connect the stream to our video element
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-    
-    // Get stream dimensions
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
-      const settings = videoTrack.getSettings();
-      console.log('Video track settings:', settings);
-      if (settings.width && settings.height) {
-        setStreamDimensions({
-          width: settings.width,
-          height: settings.height
-        });
-      }
-    }
-    
-    // Update all existing connections with the new stream
-    Object.entries(connectionsRef.current).forEach(([viewerId, connectionData]) => {
-      // For connections with a canvas, just let the animation loop handle it
-      if (!connectionData.canvas) {
-        const peerConnection = connectionData.connection;
+      // Get accurate dimensions with a delay to ensure settings are available
+      setTimeout(() => {
+        if (!streamRef.current) return;
         
-        // Replace existing tracks
-        const senders = peerConnection.getSenders();
-        senders.forEach((sender) => {
-          // Remove video tracks
-          if (sender.track?.kind === 'video') {
-            try {
-              stream.getVideoTracks().forEach(track => {
-                sender.replaceTrack(track).catch(err => {
-                  console.warn('Error replacing track:', err);
-                });
-              });
-            } catch (err) {
-              console.warn('Error replacing tracks:', err);
+        const videoTrack = streamRef.current.getVideoTracks()[0];
+        if (videoTrack) {
+          const settings = videoTrack.getSettings();
+          console.log("Video track settings:", settings);
+          
+          if (settings.width && settings.height) {
+            const dimensions = {
+              width: settings.width,
+              height: settings.height
+            };
+            console.log("Setting stream dimensions:", dimensions);
+            setStreamDimensions(dimensions);
+            
+            // Register as broadcaster with dimensions
+            if (socket?.connected) {
+              console.log("Registering as broadcaster with dimensions");
+              socket.emit('register-as-broadcaster', { dimensions });
+              isRegisteredRef.current = true;
             }
           }
-        });
-      } else if (connectionData.region) {
-        // For connections with canvas, update them with new dimensions
-        updateClientStream(
-          viewerId, 
-          connectionData.region.width, 
-          connectionData.region.height
-        );
-      }
-    });
-    
-    // Start canvas drawing if needed
-    if (Object.values(connectionsRef.current).some(conn => conn.canvas) && rafRef.current === null) {
-      rafRef.current = requestAnimationFrame(updateCanvases);
+        }
+      }, 500);
+      
+      // Handle stream ending
+      stream.getVideoTracks()[0].onended = () => {
+        console.log("Stream ended");
+        setIsStreaming(false);
+        streamRef.current = null;
+      };
+      
+      return stream;
+    } catch (error) {
+      console.error('Error starting stream:', error);
+      setIsStreaming(false);
+      throw error;
     }
   };
   
-  return { streamRef, setMediaStream, streamDimensions };
+  // Stop streaming function
+  const stopStreaming = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      setIsStreaming(false);
+    }
+    
+    // Close all peer connections
+    peerConnections.current.forEach(connection => {
+      connection.close();
+    });
+    peerConnections.current.clear();
+  };
+  
+  return {
+    isStreaming,
+    streamRef,
+    streamDimensions,
+    startStreaming,
+    stopStreaming
+  };
 };
 
-export const useViewer = (socket: Socket | null, config: ViewerConfig | null) => {
-  const [connected, setConnected] = useState<boolean>(false);
+// Hook for viewer functionality
+export const useViewer = (socket: Socket | null, clientId: string | null) => {
+  const [connected, setConnected] = useState(false);
+  const [region, setRegion] = useState<RegionConfig | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const peerConnection = useRef<RTCPeerConnection | null>(null);
-  const pendingIceCandidates = useRef<RTCIceCandidate[]>([]);
-  const hasRegistered = useRef<boolean>(false);
-  const connectionClosed = useRef<boolean>(false);
+  const connectionClosed = useRef(false);
+  const pendingCandidates = useRef<RTCIceCandidate[]>([]);
   
-  // Reset connection state when socket or config changes
   useEffect(() => {
+    if (!socket || !clientId) return;
+    
+    console.log(`Initializing viewer for client ${clientId}`);
     connectionClosed.current = false;
-    return () => {
-      connectionClosed.current = true;
-    };
-  }, [socket, config]);
-  
-  useEffect(() => {
-    if (!socket || !config) return;
     
-    console.log('Setting up viewer with config:', config);
-    
-    // Create a new RTCPeerConnection with optimized settings
+    // Create peer connection with explicit config
     const pc = new RTCPeerConnection({
       ...ICE_SERVERS,
-      iceCandidatePoolSize: 10,
-      sdpSemantics: 'unified-plan'
+      iceCandidatePoolSize: 10
     });
     peerConnection.current = pc;
     
     // Handle incoming tracks
     pc.ontrack = (event) => {
-      console.log('Received track:', event.track.kind);
+      console.log(`Received track: ${event.track.kind}`, event.track);
       
-      // Skip if the connection is closed
-      if (connectionClosed.current) return;
-      
-      // Create a new MediaStream for the first track received
+      // Create a new stream for the first track
       if (!streamRef.current) {
-        const newStream = new MediaStream();
-        newStream.addTrack(event.track);
-        streamRef.current = newStream;
-      } else {
-        // For subsequent tracks, add to the existing stream
-        const tracks = streamRef.current.getTracks();
-        const trackExists = tracks.some(t => t.kind === event.track.kind);
-        
-        if (!trackExists) {
-          streamRef.current.addTrack(event.track);
-        }
+        console.log("Creating new stream for track");
+        streamRef.current = new MediaStream();
       }
+      
+      // Check if track already exists
+      const trackExists = streamRef.current.getTracks().some(
+        t => t.id === event.track.id
+      );
+      
+      if (!trackExists) {
+        console.log(`Adding ${event.track.kind} track to stream`);
+        streamRef.current.addTrack(event.track);
+      }
+    };
+    
+    // Log all connection state changes
+    pc.oniceconnectionstatechange = () => {
+      console.log(`ICE connection state: ${pc.iceConnectionState}`);
+      
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        console.log("WebRTC connection established!");
+        setConnected(true);
+      } else if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
+        console.log(`WebRTC connection changed to ${pc.iceConnectionState}`);
+        setConnected(false);
+      }
+    };
+    
+    pc.onconnectionstatechange = () => {
+      console.log(`Connection state: ${pc.connectionState}`);
+    };
+    
+    pc.onsignalingstatechange = () => {
+      console.log(`Signaling state: ${pc.signalingState}`);
     };
     
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
-      if (event.candidate && socket.connected && !connectionClosed.current) {
-        console.log('Sending ICE candidate to broadcaster');
-        socket.emit('viewer-ice-candidate', {
-          candidate: event.candidate,
-        });
+      if (event.candidate && socket.connected) {
+        console.log("Sending ICE candidate to broadcaster");
+        socket.emit('viewer-ice-candidate', { candidate: event.candidate });
       }
     };
     
-    // Log ICE connection state changes
-    pc.oniceconnectionstatechange = () => {
-      console.log('ICE connection state:', pc.iceConnectionState);
-      
+    // Handle offer from broadcaster
+    const handleBroadcasterOffer = async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
       if (connectionClosed.current) return;
       
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        setConnected(true);
-      } else if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
-        setConnected(false);
-        
-        // Only try to reconnect if it's not intentionally closed
-        if (pc.iceConnectionState !== 'closed' && !connectionClosed.current) {
-          console.log('Connection lost, attempting to reconnect...');
-          // Wait a bit before trying to reconnect
-          setTimeout(() => {
-            if (socket.connected && !hasRegistered.current && !connectionClosed.current) {
-              console.log('Attempting to re-register as viewer');
-              socket.emit('register-as-viewer', config);
-              hasRegistered.current = true;
-            }
-          }, 2000);
-        }
-      }
-    };
-    
-    // Handle signaling state changes
-    pc.onsignalingstatechange = () => {
-      console.log('Signaling state:', pc.signalingState);
-    };
-    
-    const handleBroadcasterOffer = async ({ offer }: BroadcasterOfferPayload) => {
-      if (connectionClosed.current) return;
+      console.log("Received offer from broadcaster", offer);
       
-      console.log('Received offer from broadcaster');
       try {
-        // If we're in a strange state, reset the connection
-        if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-pranswer') {
-          console.log('Resetting connection before processing offer');
-          try {
-            await pc.setLocalDescription({type: "rollback"} as RTCSessionDescription);
-          } catch (err) {
-            console.warn('Error rolling back:', err);
-            // If rollback fails, just continue - some browsers don't support rollback
-          }
+        // Handle potential glare (https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation)
+        const offerCollision = 
+          pc.signalingState !== "stable" && 
+          offer.type === "offer";
+            
+        if (offerCollision) {
+          console.log("Handling offer collision - rolling back");
+          await Promise.all([
+            pc.setLocalDescription({type: "rollback"} as RTCSessionDescription),
+            pc.setRemoteDescription(new RTCSessionDescription(offer))
+          ]);
+        } else {
+          await pc.setRemoteDescription(new RTCSessionDescription(offer));
         }
         
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        
-        // Process any stored ICE candidates
-        if (pendingIceCandidates.current.length > 0) {
-          console.log('Processing pending ICE candidates:', pendingIceCandidates.current.length);
-          for (const candidate of pendingIceCandidates.current) {
-            try {
-              if (!connectionClosed.current && pc.connectionState !== 'closed') {
-                await pc.addIceCandidate(candidate);
-              }
-            } catch (err: any) {
-              console.warn(`Error adding stored ICE candidate: ${err.message}`);
-            }
-          }
-          pendingIceCandidates.current = [];
-        }
-        
+        console.log("Creating answer");
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         
-        console.log('Sending answer to broadcaster');
-        if (socket.connected && !connectionClosed.current) {
-          socket.emit('viewer-answer', {
-            answer: pc.localDescription,
-          });
+        console.log("Sending answer to broadcaster");
+        socket.emit('viewer-answer', { answer });
+        
+        // Apply any pending ICE candidates
+        if (pendingCandidates.current.length > 0) {
+          console.log(`Applying ${pendingCandidates.current.length} pending ICE candidates`);
+          for (const candidate of pendingCandidates.current) {
+            await pc.addIceCandidate(candidate);
+          }
+          pendingCandidates.current = [];
         }
       } catch (error) {
         console.error('Error handling offer:', error);
       }
     };
     
-    const handleBroadcasterIceCandidate = async ({ candidate }: BroadcasterIceCandidatePayload) => {
+    // Handle ICE candidate from broadcaster
+    const handleBroadcasterIceCandidate = async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
       if (connectionClosed.current) return;
       
       try {
         const iceCandidate = new RTCIceCandidate(candidate);
         
-        // Skip if connection is closed
-        if (pc.connectionState === 'closed') {
-          console.log('Connection closed, ignoring ICE candidate');
-          return;
-        }
-        
-        // Only add candidate if we have a remote description
+        // If we have a remote description, add the candidate immediately
         if (pc.remoteDescription && pc.remoteDescription.type) {
-          try {
-            await pc.addIceCandidate(iceCandidate);
-          } catch (err: any) {
-            console.warn(`Error adding ICE candidate: ${err.message}`);
-          }
+          console.log("Adding ICE candidate");
+          await pc.addIceCandidate(iceCandidate);
         } else {
-          console.log('Storing ICE candidate for later');
-          pendingIceCandidates.current.push(iceCandidate);
+          // Otherwise store it for later
+          console.log("Storing ICE candidate for later");
+          pendingCandidates.current.push(iceCandidate);
         }
       } catch (error) {
-        console.error('Error handling broadcaster ICE candidate:', error);
+        console.error('Error adding ICE candidate:', error);
       }
     };
     
-    // Set up socket event listeners
-    socket.on('broadcaster-offer', handleBroadcasterOffer);
-    socket.on('broadcaster-ice-candidate', handleBroadcasterIceCandidate);
-    
-    // Register as a viewer with config
-    const registerAsViewer = () => {
-      if (hasRegistered.current || connectionClosed.current) return;
-      
-      console.log('Registering as viewer with config');
-      socket.emit('register-as-viewer', config);
-      hasRegistered.current = true;
+    // Handle region updates
+    const handleRegionUpdate = ({ region, totalDimensions }: { region: RegionConfig, totalDimensions?: StreamDimensions }) => {
+      console.log("Region update received:", region);
+      setRegion(region);
     };
     
-    registerAsViewer();
+    // Handle client configuration
+    const handleClientConfig = (config: any) => {
+      console.log("Client config received:", config);
+      if (config.region) {
+        setRegion(config.region);
+      }
+    };
+    
+    // Handle broadcaster disconnection
+    const handleBroadcasterDisconnected = () => {
+      console.log("Broadcaster disconnected");
+      setConnected(false);
+      
+      // Clear stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+    };
+    
+    // Register as viewer
+    console.log("Registering as viewer");
+    socket.emit('register-as-viewer', { clientId });
+    
+    // Set up event listeners
+    socket.on('broadcaster-offer', handleBroadcasterOffer);
+    socket.on('broadcaster-ice-candidate', handleBroadcasterIceCandidate);
+    socket.on('region-update', handleRegionUpdate);
+    socket.on('client-config', handleClientConfig);
+    socket.on('broadcaster-disconnected', handleBroadcasterDisconnected);
     
     // Handle reconnection
     socket.on('connect', () => {
       if (connectionClosed.current) return;
       
-      console.log('Socket reconnected, registering as viewer again');
-      hasRegistered.current = false; // Reset flag to allow re-registration
-      registerAsViewer();
+      console.log("Socket reconnected, re-registering as viewer");
+      socket.emit('register-as-viewer', { clientId });
     });
     
     return () => {
-      // Mark connection as closed to prevent further operations
+      // Mark connection as closed
       connectionClosed.current = true;
+      console.log("Cleaning up viewer connection");
       
       // Clean up event listeners
       socket.off('broadcaster-offer', handleBroadcasterOffer);
       socket.off('broadcaster-ice-candidate', handleBroadcasterIceCandidate);
+      socket.off('region-update', handleRegionUpdate);
+      socket.off('client-config', handleClientConfig);
+      socket.off('broadcaster-disconnected', handleBroadcasterDisconnected);
       socket.off('connect');
       
-      // Close the connection
-      try {
-        if (pc && pc.connectionState !== 'closed') {
-          pc.close();
-        }
-      } catch (err) {
-        console.error('Error closing peer connection:', err);
+      // Close peer connection
+      if (peerConnection.current) {
+        peerConnection.current.close();
+        peerConnection.current = null;
       }
       
-      hasRegistered.current = false;
-      pendingIceCandidates.current = [];
+      // Clear stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
     };
-  }, [socket, config]);
+  }, [socket, clientId]);
   
-  return { streamRef, connected };
+  return { streamRef, connected, region };
 };

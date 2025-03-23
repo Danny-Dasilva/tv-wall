@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Rnd } from 'react-rnd';
 
+// Simple box interface
 interface Box {
   id: string;
   x: number;
@@ -8,9 +9,11 @@ interface Box {
   width: number;
   height: number;
   clientId?: string;
+  color?: string;
 }
 
-interface ClientType {
+// Client interface
+interface Client {
   clientId: string;
   name?: string;
   connected: boolean;
@@ -19,219 +22,147 @@ interface ClientType {
     y: number;
     width: number;
     height: number;
-    totalWidth: number;
-    totalHeight: number;
   };
   socketId: string;
 }
 
 interface BoxGridProps {
-  clients: ClientType[];
-  updateClientConfig: (clientId: string, config: Partial<ClientType>) => void;
+  clients: Client[];
+  updateClientConfig: (clientId: string, config: Partial<Client>) => void;
   containerWidth: number;
   containerHeight: number;
 }
 
-const BoxGrid: React.FC<BoxGridProps> = ({ 
-  clients, 
+// Generate a random pastel color
+const getRandomColor = () => {
+  // Generate pastel colors for better visibility
+  const hue = Math.floor(Math.random() * 360);
+  return `hsla(${hue}, 70%, 80%, 0.5)`;
+};
+
+const BoxGrid: React.FC<BoxGridProps> = ({
+  clients,
   updateClientConfig,
   containerWidth,
   containerHeight
 }) => {
   const [boxes, setBoxes] = useState<Box[]>([]);
-  const [selectedBox, setSelectedBox] = useState<string | null>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: containerWidth, height: containerHeight });
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [isResizing, setIsResizing] = useState<boolean>(false);
-  const [updateTimers, setUpdateTimers] = useState<{[key: string]: NodeJS.Timeout}>({});
+  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   
-  // Update when container dimensions change
+  // Initialize or update boxes from client configurations
   useEffect(() => {
-    setCanvasSize({ width: containerWidth, height: containerHeight });
-  }, [containerWidth, containerHeight]);
+    // Convert clients to boxes (if they have regions)
+    const clientBoxes = clients
+      .filter(client => client.region)
+      .map(client => {
+        // Find existing box for this client
+        const existingBox = boxes.find(box => box.clientId === client.clientId);
+        
+        // Use existing box color if available
+        const color = existingBox?.color || getRandomColor();
+        
+        return {
+          id: existingBox?.id || `box-${client.clientId}`,
+          x: client.region!.x,
+          y: client.region!.y,
+          width: client.region!.width,
+          height: client.region!.height,
+          clientId: client.clientId,
+          color
+        };
+      });
+    
+    // Find boxes without client IDs (manually created boxes)
+    const manualBoxes = boxes.filter(box => !box.clientId);
+    
+    // Combine both types of boxes
+    setBoxes([...manualBoxes, ...clientBoxes]);
+  }, [clients]);
   
-  // Initialize boxes from client configurations
-  useEffect(() => {
-    // Check if we need to initialize or update boxes
-    const shouldUpdate = clients.some(client => {
-      if (!client.region) return false;
-
-      // Check if this client already has a box
-      const existingBox = boxes.find(box => box.clientId === client.clientId);
-      if (!existingBox) return true;
-
-      // Check if region has changed
-      const region = client.region;
-      return (
-        existingBox.x !== region.x ||
-        existingBox.y !== region.y ||
-        existingBox.width !== region.width ||
-        existingBox.height !== region.height
-      );
-    });
-
-    if (shouldUpdate || boxes.length === 0) {
-      const updatedBoxes = clients
-        .filter(client => client.region)
-        .map(client => {
-          // Check if this client already has a box
-          const existingBox = boxes.find(box => box.clientId === client.clientId);
-          
-          return {
-            id: existingBox?.id || `box-${client.clientId}-${Date.now()}`,
-            x: client.region?.x || 0,
-            y: client.region?.y || 0,
-            width: client.region?.width || 100,
-            height: client.region?.height || 100,
-            clientId: client.clientId
-          };
-        });
-      
-      if (updatedBoxes.length > 0) {
-        setBoxes(prevBoxes => {
-          // Keep boxes that don't have client IDs (manually added boxes)
-          const manualBoxes = prevBoxes.filter(box => !box.clientId);
-          return [...manualBoxes, ...updatedBoxes];
-        });
-      }
-    }
-  }, [clients, boxes]);
-
   // Create a new box
   const addBox = () => {
-    // Initialize the box to fill the entire canvas
+    // Default box size (quarter of container)
     const newBox: Box = {
       id: `box-${Date.now()}`,
-      x: 0,
-      y: 0,
-      width: canvasSize.width,
-      height: canvasSize.height
+      x: Math.round(containerWidth * 0.25),
+      y: Math.round(containerHeight * 0.25),
+      width: Math.round(containerWidth * 0.5),
+      height: Math.round(containerHeight * 0.5),
+      color: getRandomColor()
     };
     
-    console.log('Adding new box with dimensions:', newBox);
     setBoxes([...boxes, newBox]);
-    setSelectedBox(newBox.id);
+    setSelectedBoxId(newBox.id);
   };
-
+  
   // Delete a box
   const deleteBox = (id: string) => {
-    // Find if there's a client assigned to this box
-    const box = boxes.find(b => b.id === id);
+    const box = boxes.find(box => box.id === id);
+    
+    // If box is assigned to a client, clear its region
     if (box?.clientId) {
-      // Clear the client's region
-      updateClientConfig(box.clientId, {
-        region: undefined
-      });
+      updateClientConfig(box.clientId, { region: undefined });
     }
     
     setBoxes(boxes.filter(box => box.id !== id));
-    if (selectedBox === id) {
-      setSelectedBox(null);
+    if (selectedBoxId === id) {
+      setSelectedBoxId(null);
     }
-  };
-
-  // Assign a client to a box
-  const assignClientToBox = useCallback((boxId: string, clientId: string) => {
-    // First, find the box that will be assigned to this client
-    const targetBox = boxes.find(box => box.id === boxId);
-    if (!targetBox) return;
-    
-    // Update boxes state locally first
-    setBoxes(prevBoxes => prevBoxes.map(box => {
-      if (box.clientId === clientId) {
-        return { ...box, clientId: undefined };
-      }
-      if (box.id === boxId) {
-        return { ...box, clientId };
-      }
-      return box;
-    }));
-    
-    // Then update server config
-    updateClientConfig(clientId, {
-      region: {
-        x: targetBox.x,
-        y: targetBox.y,
-        width: targetBox.width,
-        height: targetBox.height,
-        totalWidth: canvasSize.width,
-        totalHeight: canvasSize.height
-      }
-    });
-  }, [boxes, canvasSize, updateClientConfig]);
-
-  // Handle drag start
-  const handleDragStart = () => {
-    setIsDragging(true);
   };
   
-  // Handle resize start
-  const handleResizeStart = () => {
-    setIsResizing(true);
+  // Assign a client to a box
+  const assignClientToBox = (boxId: string, clientId: string) => {
+    const box = boxes.find(box => box.id === boxId);
+    if (!box) return;
+    
+    // First, remove the client from any other box
+    const updatedBoxes = boxes.map(b => {
+      if (b.clientId === clientId) {
+        return { ...b, clientId: undefined };
+      }
+      if (b.id === boxId) {
+        return { ...b, clientId };
+      }
+      return b;
+    });
+    
+    setBoxes(updatedBoxes);
+    
+    // Update client configuration with this box's dimensions
+    updateClientConfig(clientId, {
+      region: {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.round(box.width),
+        height: Math.round(box.height)
+      }
+    });
   };
-
-  // Debounced update function to prevent too many rapid updates
-  const debouncedUpdate = useCallback((
-    clientId: string,
-    region: {
-      x: number,
-      y: number,
-      width: number,
-      height: number,
-      totalWidth: number,
-      totalHeight: number
-    }
+  
+  // Update box position after drag or resize
+  const updateBoxPosition = (
+    id: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
   ) => {
-    // Clear existing timer for this client
-    if (updateTimers[clientId]) {
-      clearTimeout(updateTimers[clientId]);
-    }
+    // Ensure values are integers
+    const roundedX = Math.round(x);
+    const roundedY = Math.round(y);
+    const roundedWidth = Math.round(width);
+    const roundedHeight = Math.round(height);
     
-    // Set a new timer
-    const timerId = setTimeout(() => {
-      updateClientConfig(clientId, { region });
-      
-      // Remove this timer from the state
-      setUpdateTimers(prev => {
-        const newTimers = { ...prev };
-        delete newTimers[clientId];
-        return newTimers;
-      });
-    }, 100); // 100ms debounce
-    
-    // Store the timer ID
-    setUpdateTimers(prev => ({ ...prev, [clientId]: timerId }));
-  }, [updateTimers, updateClientConfig]);
-
-  // Finalize position changes after drag/resize ends
-  const updateBoxPosition = useCallback((
-    boxId: string, 
-    position: { x: number, y: number, width?: number, height?: number }
-  ) => {
-    setIsDragging(false);
-    setIsResizing(false);
-    
-    // Find the current box to get its existing dimensions
-    const currentBox = boxes.find(box => box.id === boxId);
-    if (!currentBox) return;
-    
-    // Ensure dimensions are integers to avoid precision issues
-    const x = Math.round(position.x);
-    const y = Math.round(position.y);
-    // Use existing dimensions if not provided in the position object
-    const width = position.width !== undefined ? Math.round(position.width) : currentBox.width;
-    const height = position.height !== undefined ? Math.round(position.height) : currentBox.height;
-    
-    console.log('Updating box position:', { boxId, x, y, width, height });
-    
+    // Update local state
     const updatedBoxes = boxes.map(box => {
-      if (box.id === boxId) {
-        return { 
-          ...box, 
-          x, 
-          y,
-          width,
-          height
+      if (box.id === id) {
+        return {
+          ...box,
+          x: roundedX,
+          y: roundedY,
+          width: roundedWidth,
+          height: roundedHeight
         };
       }
       return box;
@@ -239,134 +170,145 @@ const BoxGrid: React.FC<BoxGridProps> = ({
     
     setBoxes(updatedBoxes);
     
-    // If a client is assigned to this box, update its region
-    const updatedBox = updatedBoxes.find(box => box.id === boxId);
-    if (updatedBox?.clientId) {
-      debouncedUpdate(updatedBox.clientId, {
-        x: updatedBox.x,
-        y: updatedBox.y,
-        width: updatedBox.width,
-        height: updatedBox.height,
-        totalWidth: canvasSize.width,
-        totalHeight: canvasSize.height
+    // If this box is assigned to a client, update the client
+    const box = updatedBoxes.find(box => box.id === id);
+    if (box?.clientId) {
+      updateClientConfig(box.clientId, {
+        region: {
+          x: roundedX,
+          y: roundedY,
+          width: roundedWidth,
+          height: roundedHeight
+        }
       });
     }
-  }, [boxes, canvasSize, debouncedUpdate]);
-
-  // Clean up timers on unmount
-  useEffect(() => {
-    return () => {
-      Object.values(updateTimers).forEach(timer => clearTimeout(timer));
-    };
-  }, [updateTimers]);
+  };
 
   return (
-    <>
-      <div className="flex justify-between items-center mb-2">
-        <h3 className="text-lg font-semibold">Visual Client Configuration</h3>
-        <button 
+    <div className="box-grid">
+      {/* Toolbar */}
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold">Visual Layout Editor</h3>
+        <button
           onClick={addBox}
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+          className="px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
         >
-          Add Box
+          Add New Box
         </button>
       </div>
       
-      {/* Boxes are rendered inside the parent container */}
-      {boxes.map((box) => {
-        const isSelected = selectedBox === box.id;
-        const client = clients.find(c => c.clientId === box.clientId);
-        
-        return (
-          <Rnd
-            key={box.id}
-            size={{ width: box.width, height: box.height }}
-            position={{ x: box.x, y: box.y }}
-            onDragStart={handleDragStart}
-            onResizeStart={handleResizeStart}
-            onDragStop={(e, d) => {
-              updateBoxPosition(box.id, { 
-                x: d.x, 
-                y: d.y
-                // width and height will be preserved from the existing box
-              });
-            }}
-            onResizeStop={(e, direction, ref, delta, position) => {
-              updateBoxPosition(box.id, {
-                x: position.x,
-                y: position.y,
-                width: parseInt(ref.style.width),
-                height: parseInt(ref.style.height)
-              });
-            }}
-            onClick={() => setSelectedBox(box.id)}
-            className={`z-${isSelected ? 50 : 40}`}
-            style={{
-              border: `2px solid ${isSelected ? 'red' : (box.clientId ? 'blue' : 'gray')}`,
-              backgroundColor: box.clientId 
-                ? 'rgba(59, 130, 246, 0.3)' 
-                : 'rgba(255, 255, 255, 0.5)',
-              backdropFilter: 'blur(2px)',
-              pointerEvents: 'auto'
-            }}
-            resizeGrid={[10, 10]}
-            dragGrid={[10, 10]}
-            bounds="parent"
-          >
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-2">
-              <div className="text-sm font-semibold truncate w-full text-center">
-                {client?.name || box.clientId || 'Unassigned'}
-              </div>
-              
-              <div className="text-xs text-center opacity-75 mt-1">
-                {Math.round(box.width)} × {Math.round(box.height)}
-              </div>
-              
-              {isSelected && (
-                <div className="absolute top-1 right-1 flex gap-1">
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteBox(box.id);
-                    }}
-                    className="w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
-                  >
-                    ×
-                  </button>
+      {/* Box container - the visual editor */}
+      <div
+        className="relative border border-gray-300 bg-gray-100"
+        style={{
+          width: '100%',
+          height: containerWidth > 800 ? `${containerHeight}px` : 'auto',
+          aspectRatio: `${containerWidth}/${containerHeight}`
+        }}
+      >
+        {/* Render each box */}
+        {boxes.map(box => {
+          const isSelected = selectedBoxId === box.id;
+          const client = clients.find(c => c.clientId === box.clientId);
+          
+          return (
+            <Rnd
+              key={box.id}
+              size={{ width: box.width, height: box.height }}
+              position={{ x: box.x, y: box.y }}
+              onDragStart={() => {
+                setIsDragging(true);
+                setSelectedBoxId(box.id);
+              }}
+              onDragStop={(e, d) => {
+                setIsDragging(false);
+                updateBoxPosition(box.id, d.x, d.y, box.width, box.height);
+              }}
+              onResizeStart={() => {
+                setSelectedBoxId(box.id);
+              }}
+              onResizeStop={(e, direction, ref, delta, position) => {
+                updateBoxPosition(
+                  box.id, 
+                  position.x, 
+                  position.y, 
+                  parseInt(ref.style.width), 
+                  parseInt(ref.style.height)
+                );
+              }}
+              onClick={() => setSelectedBoxId(box.id)}
+              bounds="parent"
+              dragGrid={[10, 10]}
+              resizeGrid={[10, 10]}
+              className="flex items-center justify-center"
+              style={{
+                border: isSelected ? '2px solid red' : '2px solid blue',
+                backgroundColor: box.color || 'rgba(59, 130, 246, 0.3)',
+                zIndex: isSelected ? 100 : 10
+              }}
+            >
+              <div className="flex flex-col items-center justify-center w-full h-full p-2">
+                {/* Box label */}
+                <div className="font-semibold text-center text-sm bg-white bg-opacity-80 px-2 py-1 rounded">
+                  {client?.name || box.clientId || 'Unassigned'}
                 </div>
-              )}
-            </div>
-          </Rnd>
-        );
-      })}
+                
+                {/* Box dimensions */}
+                <div className="text-xs mt-1 bg-black bg-opacity-50 text-white px-2 py-0.5 rounded">
+                  {Math.round(box.width)} × {Math.round(box.height)}
+                </div>
+                
+                {/* Controls for selected box */}
+                {isSelected && (
+                  <div className="absolute top-0 right-0 p-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteBox(box.id);
+                      }}
+                      className="w-6 h-6 flex items-center justify-center bg-red-500 text-white rounded-full"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </div>
+            </Rnd>
+          );
+        })}
+      </div>
       
-      {selectedBox && (
-        <div 
-          className="mt-4 p-4 border border-gray-200 rounded bg-gray-50"
-          style={{ marginTop: `${canvasSize.height + 20}px` }}
-        >
-          <h4 className="font-medium mb-2">Assign client to selected box</h4>
-          <div className="grid grid-cols-2 gap-2">
-            {clients.map(client => (
-              <button
-                key={client.clientId}
-                onClick={() => assignClientToBox(selectedBox, client.clientId)}
-                className={`
-                  p-2 text-sm rounded
-                  ${boxes.find(b => b.id === selectedBox)?.clientId === client.clientId
-                    ? 'bg-green-500 text-white'
-                    : 'bg-gray-200 hover:bg-gray-300'
-                  }
-                `}
-              >
-                {client.name || client.clientId}
-                {!client.connected && ' (Disconnected)'}
-              </button>
-            ))}
+      {/* Client assignment panel (only shown when a box is selected) */}
+      {selectedBoxId && (
+        <div className="mt-4 p-4 border rounded bg-gray-50">
+          <h4 className="font-medium mb-2">Assign Client to Selected Box</h4>
+          
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {clients.map(client => {
+              const isAssigned = boxes.find(b => b.id === selectedBoxId)?.clientId === client.clientId;
+              const isAssignedToOther = boxes.some(b => b.id !== selectedBoxId && b.clientId === client.clientId);
+              
+              return (
+                <button
+                  key={client.clientId}
+                  onClick={() => assignClientToBox(selectedBoxId, client.clientId)}
+                  className={`
+                    p-2 text-sm rounded flex items-center justify-between
+                    ${isAssigned ? 'bg-green-500 text-white' : isAssignedToOther ? 'bg-yellow-200' : 'bg-gray-200 hover:bg-gray-300'}
+                  `}
+                  title={isAssignedToOther ? 'Currently assigned to another box' : ''}
+                >
+                  <span className="truncate">
+                    {client.name || client.clientId}
+                  </span>
+                  <span className={`ml-1 w-2 h-2 rounded-full ${client.connected ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 };
 
