@@ -1,18 +1,61 @@
 import { useEffect, useRef, useState } from 'react';
+import { Socket } from 'socket.io-client';
 
-const ICE_SERVERS = {
+interface RTCIceServerConfig {
+  iceServers: Array<{
+    urls: string | string[];
+  }>;
+}
+
+interface ConnectionData {
+  connection: RTCPeerConnection;
+  pendingCandidates: RTCIceCandidate[];
+  state: 'new' | 'offering' | 'connected';
+}
+
+interface Connections {
+  [viewerId: string]: ConnectionData;
+}
+
+interface ViewerConfig {
+  clientId: string;
+  [key: string]: any;
+}
+
+interface ViewerAnswerPayload {
+  viewerId: string;
+  answer: RTCSessionDescription;
+}
+
+interface ViewerIceCandidatePayload {
+  viewerId: string;
+  candidate: RTCIceCandidate;
+}
+
+interface BroadcasterOfferPayload {
+  offer: RTCSessionDescription;
+}
+
+interface BroadcasterIceCandidatePayload {
+  candidate: RTCIceCandidate;
+}
+
+const ICE_SERVERS: RTCIceServerConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
   ],
 };
 
-export const useBroadcaster = (socket) => {
-  const [connections, setConnections] = useState({});
-  const streamRef = useRef(null);
-  const mediaStream = useRef(null);
-  const isRegistered = useRef(false);
-  const connectionsRef = useRef({}); // Reference to the current connections state
+export const useBroadcaster = (socket: Socket | null) => {
+  const [connections, setConnections] = useState<Connections>({});
+  const streamRef = useRef<MediaStream | null>(null);
+  const mediaStream = useRef<MediaStream | null>(null);
+  const isRegistered = useRef<boolean>(false);
+  const connectionsRef = useRef<Connections>({}); // Reference to the current connections state
 
   // Update the ref whenever connections change
   useEffect(() => {
@@ -22,7 +65,7 @@ export const useBroadcaster = (socket) => {
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewViewer = async (viewerId) => {
+    const handleNewViewer = async (viewerId: string) => {
       console.log('New viewer connected:', viewerId);
       
       // Check if connection already exists
@@ -32,12 +75,37 @@ export const useBroadcaster = (socket) => {
       }
       
       try {
-        const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+        const peerConnection = new RTCPeerConnection({
+          ...ICE_SERVERS,
+          iceCandidatePoolSize: 10,
+          sdpSemantics: 'unified-plan'
+        });
         
         // Add tracks when they exist
         if (mediaStream.current) {
           mediaStream.current.getTracks().forEach(track => {
-            peerConnection.addTrack(track, mediaStream.current);
+            if (mediaStream.current) {
+              const sender = peerConnection.addTrack(track, mediaStream.current);
+              
+              // Set encoding parameters for video tracks to optimize quality
+              if (track.kind === 'video') {
+                const params = sender.getParameters();
+                if (!params.encodings) {
+                  params.encodings = [{}];
+                }
+                
+                // Configure encoding parameters for better quality
+                params.encodings[0].maxBitrate = 2500000; // 2.5 Mbps
+                params.encodings[0].maxFramerate = 30;
+                params.encodings[0].scaleResolutionDownBy = 1.0; // No downscaling
+                
+                try {
+                  sender.setParameters(params);
+                } catch (err) {
+                  console.warn('Failed to set encoding parameters:', err);
+                }
+              }
+            }
           });
         }
         
@@ -82,7 +150,8 @@ export const useBroadcaster = (socket) => {
         
         const offer = await peerConnection.createOffer({
           offerToReceiveAudio: false,
-          offerToReceiveVideo: true
+          offerToReceiveVideo: true,
+          iceRestart: true
         });
         
         await peerConnection.setLocalDescription(offer);
@@ -108,7 +177,7 @@ export const useBroadcaster = (socket) => {
       }
     };
     
-    const handleViewerAnswer = async ({ viewerId, answer }) => {
+    const handleViewerAnswer = async ({ viewerId, answer }: ViewerAnswerPayload) => {
       try {
         const connectionData = connectionsRef.current[viewerId];
         if (!connectionData) {
@@ -139,7 +208,7 @@ export const useBroadcaster = (socket) => {
               if (peerConnection.connectionState !== 'closed') {
                 await peerConnection.addIceCandidate(candidate);
               }
-            } catch (err) {
+            } catch (err: any) {
               console.warn(`Error adding stored ICE candidate: ${err.message}`);
             }
           }
@@ -161,7 +230,7 @@ export const useBroadcaster = (socket) => {
       }
     };
     
-    const handleViewerIceCandidate = async ({ viewerId, candidate }) => {
+    const handleViewerIceCandidate = async ({ viewerId, candidate }: ViewerIceCandidatePayload) => {
       try {
         const connectionData = connectionsRef.current[viewerId];
         if (!connectionData) {
@@ -185,7 +254,7 @@ export const useBroadcaster = (socket) => {
             peerConnection.connectionState !== 'closed') {
           try {
             await peerConnection.addIceCandidate(iceCandidate);
-          } catch (err) {
+          } catch (err: any) {
             console.warn(`Error adding ICE candidate: ${err.message}`);
           }
         } else {
@@ -209,7 +278,7 @@ export const useBroadcaster = (socket) => {
       }
     };
     
-    const handleViewerDisconnect = (viewerId) => {
+    const handleViewerDisconnect = (viewerId: string) => {
       console.log('Viewer disconnected:', viewerId);
       try {
         const connectionData = connectionsRef.current[viewerId];
@@ -283,7 +352,7 @@ export const useBroadcaster = (socket) => {
   }, [socket]);
   
   // Function to set the media stream
-  const setMediaStream = (stream) => {
+  const setMediaStream = (stream: MediaStream) => {
     mediaStream.current = stream;
     streamRef.current = stream;
     
@@ -322,13 +391,13 @@ export const useBroadcaster = (socket) => {
   return { streamRef, setMediaStream };
 };
 
-export const useViewer = (socket, config) => {
-  const [connected, setConnected] = useState(false);
-  const streamRef = useRef(null);
-  const peerConnection = useRef(null);
-  const pendingIceCandidates = useRef([]);
-  const hasRegistered = useRef(false);
-  const connectionClosed = useRef(false);
+export const useViewer = (socket: Socket | null, config: ViewerConfig | null) => {
+  const [connected, setConnected] = useState<boolean>(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const pendingIceCandidates = useRef<RTCIceCandidate[]>([]);
+  const hasRegistered = useRef<boolean>(false);
+  const connectionClosed = useRef<boolean>(false);
   
   // Reset connection state when socket or config changes
   useEffect(() => {
@@ -343,8 +412,12 @@ export const useViewer = (socket, config) => {
     
     console.log('Setting up viewer with config:', config);
     
-    // Create a new RTCPeerConnection
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+    // Create a new RTCPeerConnection with optimized settings
+    const pc = new RTCPeerConnection({
+      ...ICE_SERVERS,
+      iceCandidatePoolSize: 10,
+      sdpSemantics: 'unified-plan'
+    });
     peerConnection.current = pc;
     
     // Handle incoming tracks
@@ -411,7 +484,7 @@ export const useViewer = (socket, config) => {
       console.log('Signaling state:', pc.signalingState);
     };
     
-    const handleBroadcasterOffer = async ({ offer }) => {
+    const handleBroadcasterOffer = async ({ offer }: BroadcasterOfferPayload) => {
       if (connectionClosed.current) return;
       
       console.log('Received offer from broadcaster');
@@ -420,7 +493,7 @@ export const useViewer = (socket, config) => {
         if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-pranswer') {
           console.log('Resetting connection before processing offer');
           try {
-            await pc.setLocalDescription({type: "rollback"});
+            await pc.setLocalDescription({type: "rollback"} as RTCSessionDescription);
           } catch (err) {
             console.warn('Error rolling back:', err);
             // If rollback fails, just continue - some browsers don't support rollback
@@ -437,7 +510,7 @@ export const useViewer = (socket, config) => {
               if (!connectionClosed.current && pc.connectionState !== 'closed') {
                 await pc.addIceCandidate(candidate);
               }
-            } catch (err) {
+            } catch (err: any) {
               console.warn(`Error adding stored ICE candidate: ${err.message}`);
             }
           }
@@ -458,7 +531,7 @@ export const useViewer = (socket, config) => {
       }
     };
     
-    const handleBroadcasterIceCandidate = async ({ candidate }) => {
+    const handleBroadcasterIceCandidate = async ({ candidate }: BroadcasterIceCandidatePayload) => {
       if (connectionClosed.current) return;
       
       try {
@@ -474,7 +547,7 @@ export const useViewer = (socket, config) => {
         if (pc.remoteDescription && pc.remoteDescription.type) {
           try {
             await pc.addIceCandidate(iceCandidate);
-          } catch (err) {
+          } catch (err: any) {
             console.warn(`Error adding ICE candidate: ${err.message}`);
           }
         } else {

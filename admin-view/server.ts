@@ -1,7 +1,58 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const next = require('next');
+import express from 'express';
+import http from 'http';
+import { Server, Socket } from 'socket.io';
+import next from 'next';
+
+interface ClientConfig {
+  clientId: string;
+  socketId: string;
+  connected: boolean;
+  region?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    totalWidth: number;
+    totalHeight: number;
+  };
+  [key: string]: any;
+}
+
+interface ClientsMap {
+  [clientId: string]: ClientConfig;
+}
+
+interface ViewerRegistrationConfig {
+  clientId: string;
+  [key: string]: any;
+}
+
+interface ClientConfigRequest {
+  clientId: string;
+}
+
+interface ClientConfigUpdate {
+  clientId: string;
+  config: Partial<ClientConfig>;
+}
+
+interface BroadcasterOffer {
+  viewerId: string;
+  offer: RTCSessionDescriptionInit;
+}
+
+interface ViewerAnswer {
+  answer: RTCSessionDescriptionInit;
+}
+
+interface BroadcasterIceCandidate {
+  viewerId: string;
+  candidate: RTCIceCandidateInit;
+}
+
+interface ViewerIceCandidate {
+  candidate: RTCIceCandidateInit;
+}
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
@@ -22,10 +73,10 @@ app.prepare().then(() => {
   });
   
   // Store connected clients and their configurations
-  const clients = {};
-  let broadcaster = null;
+  const clients: ClientsMap = {};
+  let broadcaster: string | null = null;
   
-  io.on('connection', (socket) => {
+  io.on('connection', (socket: Socket) => {
     console.log('New socket connection:', socket.id);
     
     // Broadcaster registration
@@ -51,7 +102,7 @@ app.prepare().then(() => {
     });
     
     // Viewer registration
-    socket.on('register-as-viewer', (config) => {
+    socket.on('register-as-viewer', (config: ViewerRegistrationConfig) => {
       if (!config || !config.clientId) {
         console.log('Invalid viewer registration - missing clientId');
         return;
@@ -81,7 +132,7 @@ app.prepare().then(() => {
     });
     
     // Client config requests
-    socket.on('get-client-config', ({ clientId }) => {
+    socket.on('get-client-config', ({ clientId }: ClientConfigRequest) => {
       console.log('Config request for client:', clientId);
       
       // Return existing config or create a new one
@@ -119,15 +170,26 @@ app.prepare().then(() => {
     });
     
     // Admin updates client config
-    socket.on('update-client-config', ({ clientId, config }) => {
+    socket.on('update-client-config', ({ clientId, config }: ClientConfigUpdate) => {
       if (clients[clientId]) {
+        // Store previous configuration
+        const prevConfig = { ...clients[clientId] };
+        
+        // Update with new configuration
         clients[clientId] = {
-          ...clients[clientId],
+          ...prevConfig,
           ...config,
         };
         
-        // Notify the client of its updated config
-        if (clients[clientId].socketId) {
+        // For region updates, send only the region data to minimize payload
+        if (config.region && clients[clientId].socketId) {
+          io.to(clients[clientId].socketId).emit('region-update', {
+            clientId,
+            region: clients[clientId].region
+          });
+        } 
+        // For non-region updates, send the full config
+        else if (clients[clientId].socketId) {
           io.to(clients[clientId].socketId).emit('client-config', clients[clientId]);
         }
         
@@ -137,7 +199,7 @@ app.prepare().then(() => {
     });
     
     // WebRTC signaling - more robust error handling
-    socket.on('broadcaster-offer', ({ viewerId, offer }) => {
+    socket.on('broadcaster-offer', ({ viewerId, offer }: BroadcasterOffer) => {
       if (!viewerId) {
         console.log('Invalid broadcaster offer - missing viewerId');
         return;
@@ -147,7 +209,7 @@ app.prepare().then(() => {
       io.to(viewerId).emit('broadcaster-offer', { offer });
     });
     
-    socket.on('viewer-answer', ({ answer }) => {
+    socket.on('viewer-answer', ({ answer }: ViewerAnswer) => {
       if (!broadcaster) {
         console.log('Received viewer answer but no broadcaster registered');
         return;
@@ -157,7 +219,7 @@ app.prepare().then(() => {
       io.to(broadcaster).emit('viewer-answer', { viewerId: socket.id, answer });
     });
     
-    socket.on('broadcaster-ice-candidate', ({ viewerId, candidate }) => {
+    socket.on('broadcaster-ice-candidate', ({ viewerId, candidate }: BroadcasterIceCandidate) => {
       if (!viewerId) {
         console.log('Invalid broadcaster ICE candidate - missing viewerId');
         return;
@@ -167,7 +229,7 @@ app.prepare().then(() => {
       io.to(viewerId).emit('broadcaster-ice-candidate', { candidate });
     });
     
-    socket.on('viewer-ice-candidate', ({ candidate }) => {
+    socket.on('viewer-ice-candidate', ({ candidate }: ViewerIceCandidate) => {
       if (!broadcaster) {
         console.log('Received viewer ICE candidate but no broadcaster registered');
         return;

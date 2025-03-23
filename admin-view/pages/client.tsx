@@ -1,7 +1,8 @@
 import Head from 'next/head';
 import ClientView from '../components/ClientView';
+import React from 'react';
 
-export default function ClientPage() {
+const ClientPage: React.FC = () => {
   return (
     <>
       <Head>
@@ -38,4 +39,6 @@ export default function ClientPage() {
       <ClientView />
     </>
   );
-}
+};
+
+export default ClientPage;

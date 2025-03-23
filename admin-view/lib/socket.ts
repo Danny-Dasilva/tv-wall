@@ -1,9 +1,9 @@
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
-export const useSocket = () => {
-  const [socket, setSocket] = useState(null);
-  const isConnecting = useRef(false);
+export const useSocket = (): Socket | null => {
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const isConnecting = useRef<boolean>(false);
   
   useEffect(() => {
     // Prevent multiple connection attempts
